@@ -17,23 +17,36 @@
 /**
  * Build a thumbnail URL from a stored cdn_url.
  *
- * Input shape (what we store in DB after upload):
- *   https://img.perceptpixel.com/<org-uid>/<filename>
+ * The transformation segment goes **immediately after the org-uid**, before
+ * any folder/sub-path components. So:
  *
- * Output shape:
- *   https://img.perceptpixel.com/<org-uid>/w_<size>,h_<size>,c_pad/<filename>
+ *   in:  https://img.perceptpixel.com/<org>/<filename>
+ *   out: https://img.perceptpixel.com/<org>/w_<size>,h_<size>,c_pad/<filename>
+ *
+ *   in:  https://img.perceptpixel.com/<org>/<folder>/<filename>
+ *   out: https://img.perceptpixel.com/<org>/w_<size>,h_<size>,c_pad/<folder>/<filename>
+ *
+ * The naive "insert before last slash" approach we tried first lands the
+ * transform between folder and filename — PerceptPixel returns 400 for that
+ * shape. The transform must be the *second* path segment.
  *
  * Uses c_pad to maintain aspect ratio without cropping — important for
  * worker photos where we don't want to chop heads off. Adds padding to
  * make the image square instead.
  *
- * If the input doesn't contain a "/" (malformed/unexpected), returns it
- * unchanged — caller's `<img src>` will simply show the original.
+ * If the input is malformed (not a valid URL, or has fewer than 2 path
+ * segments), returns it unchanged.
  */
 export function perceptpixelThumbnailUrl(cdnUrl: string, size: number): string {
-  const lastSlash = cdnUrl.lastIndexOf("/");
-  if (lastSlash === -1) return cdnUrl;
-  const before = cdnUrl.slice(0, lastSlash);
-  const after = cdnUrl.slice(lastSlash); // includes the leading slash
-  return `${before}/w_${size},h_${size},c_pad${after}`;
+  let url: URL;
+  try {
+    url = new URL(cdnUrl);
+  } catch {
+    return cdnUrl;
+  }
+  const segments = url.pathname.split("/").filter((s) => s.length > 0);
+  if (segments.length < 2) return cdnUrl;
+  const [orgUid, ...rest] = segments;
+  const transformation = `w_${size},h_${size},c_pad`;
+  return `${url.origin}/${orgUid}/${transformation}/${rest.join("/")}`;
 }
