@@ -18,6 +18,12 @@ const S3_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY!;
 const s3 = new S3Client({
   region: S3_REGION,
   credentials: { accessKeyId: S3_ACCESS_KEY, secretAccessKey: S3_SECRET_KEY },
+  // Restore pre-SDK-3.729 behaviour: don't bake CRC32 of empty content into
+  // presigned URLs. Without this, presigned PUTs fail with
+  // SignatureDoesNotMatch because the signed URL embeds an empty-body
+  // checksum but the actual upload has bytes. See aws/aws-sdk-js-v3 issues
+  // tracker for the megathread.
+  requestChecksumCalculation: "WHEN_REQUIRED",
 });
 
 // File-type allowlist. Maps MIME type → file extension we use for the S3 key.
