@@ -95,3 +95,49 @@ export async function uploadToPerceptPixel(
     height: typeof json.height === "number" ? json.height : undefined,
   };
 }
+
+// === Annotations (tags + captions) ===
+//
+// PerceptPixel calls them "annotations" — tags AND captions in one schema.
+// Tags are NOT plain strings; they're `{name: string, confidence: number}`
+// objects. Confidence is 1.0 for human-set tags, < 1.0 for AI-suggested ones.
+//
+// API: POST https://api.perceptpixel.com/v1/media/<uid>/annotations
+//   Body (all fields optional — partial update):
+//     { tags?: [{name, confidence}, ...], captions?: [{text, confidence}, ...] }
+//   Omitted fields → existing values retained.
+//   Empty array → field cleared.
+//
+// Source: https://perceptpixel.com/docs/api/media/update-annotations
+
+const ANNOTATIONS_URL = (uid: string) =>
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}/annotations`;
+
+export type PerceptPixelTag = { name: string; confidence: number };
+export type PerceptPixelCaption = { text: string; confidence: number };
+export type PerceptPixelAnnotations = {
+  tags?: PerceptPixelTag[];
+  captions?: PerceptPixelCaption[];
+};
+
+export async function addAnnotationsToMedia(
+  uid: string,
+  annotations: PerceptPixelAnnotations
+): Promise<void> {
+  const res = await fetch(ANNOTATIONS_URL(uid), {
+    method: "POST",
+    headers: {
+      Authorization: `Api-Key ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(annotations),
+  });
+
+  if (!res.ok) {
+    throw new Error(
+      `PerceptPixel annotations update failed: ${res.status} ${await res.text()}`
+    );
+  }
+  // Response body is the updated annotations; we don't need it for fire-and-
+  // forget tagging, so we don't read it.
+}

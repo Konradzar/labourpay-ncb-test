@@ -16,7 +16,20 @@
 // support it.
 
 import { NextRequest, NextResponse } from "next/server";
-import { uploadToPerceptPixel, PP_MAX_BYTES } from "@/lib/perceptpixel-utils";
+import {
+  uploadToPerceptPixel,
+  addAnnotationsToMedia,
+  PP_MAX_BYTES,
+} from "@/lib/perceptpixel-utils";
+
+// Tag every image uploaded via this workers-specific route with "worker".
+// If/when we add other table-specific upload routes (projects, etc.), each
+// route applies its own tag. Hard-coded here rather than passed from the
+// client so the client can't lie about which table the upload belongs to.
+const WORKERS_TAG: { name: string; confidence: number } = {
+  name: "worker",
+  confidence: 1.0,
+};
 
 export async function POST(req: NextRequest) {
   let formData: FormData;
@@ -56,6 +69,20 @@ export async function POST(req: NextRequest) {
 
   try {
     const result = await uploadToPerceptPixel(arrayBuffer, filename, contentType);
+
+    // Auto-tag the uploaded media with "worker". This is fire-and-forget by
+    // design: if tagging fails (transient network blip, PerceptPixel hiccup),
+    // the image is already up and usable — failing the whole request would
+    // be the wrong tradeoff. Log so trends are visible in the dev server log.
+    try {
+      await addAnnotationsToMedia(result.uid, { tags: [WORKERS_TAG] });
+    } catch (tagErr) {
+      console.warn(
+        `[perceptpixel-upload] auto-tag failed for uid=${result.uid}:`,
+        tagErr instanceof Error ? tagErr.message : tagErr
+      );
+    }
+
     return NextResponse.json({ cdn_url: result.cdn_url, uid: result.uid });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
