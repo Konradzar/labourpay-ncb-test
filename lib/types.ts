@@ -18,6 +18,12 @@ export type Worker = {
   monthly_salary: string;
   photo_key: string | null;
   id_doc_key: string | null;
+  // V0.1.5 — third image source for PerceptPixel α-mode test. Stores the full
+  // CDN URL returned by PerceptPixel's /v1/media upload (e.g.
+  // "https://img.perceptpixel.com/<org-uid>/<filename>"). Optional / nullable
+  // because existing rows pre-V0.1.5 don't have it. See
+  // docs/plans/2026-05-07-v0.1.5-perceptpixel-design.md (when written).
+  perceptpixel_url?: string | null;
 };
 
 // === NCB envelope types ===

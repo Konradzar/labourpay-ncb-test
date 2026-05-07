@@ -124,6 +124,25 @@ export default async function WorkerDetailPage({
         )}
       </section>
 
+      {/* V0.1.5 — third image source served by PerceptPixel's CDN.
+          The URL is the cdn_url returned by /v1/media at upload time; it's
+          public + stable (no presigning, no expiry) so we render directly. */}
+      <section style={{ marginTop: "2rem" }}>
+        <h2 style={{ borderBottom: "1px solid #ddd", paddingBottom: "0.25rem" }}>
+          PerceptPixel image
+        </h2>
+        {worker.perceptpixel_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={worker.perceptpixel_url}
+            alt={`PerceptPixel image of ${worker.name}`}
+            style={{ maxWidth: 320, height: "auto", borderRadius: 4, border: "1px solid #ddd" }}
+          />
+        ) : (
+          <p style={{ color: "#888", fontStyle: "italic" }}>No PerceptPixel image.</p>
+        )}
+      </section>
+
       <section
         style={{
           marginTop: "2.5rem",

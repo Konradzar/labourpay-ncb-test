@@ -2,10 +2,13 @@
 
 // app/workers/new/AddWorkerForm.tsx
 //
-// Client component. Two file inputs use upload-on-pick — files are uploaded
-// to S3 via presigned URL the moment they're selected. The form's hidden
-// state stores the returned keys. On submit, only the keys are sent to NCB
-// (no file bytes pass through our server).
+// Client component. THREE file inputs, all upload-on-pick:
+//   - Photo + ID Document → S3 via presigned URL (browser → S3 directly)
+//   - PerceptPixel image  → POST /api/perceptpixel-upload (server proxy,
+//     because PerceptPixel's Api-Key auth can't be used safely in browser JS)
+// Form state stores the resulting key (S3) or cdn_url (PerceptPixel).
+// On submit, only the keys/URLs are sent to NCB — no file bytes ever pass
+// through our server for the S3 case.
 
 import { useState, useRef, FormEvent } from "react";
 import { useRouter } from "next/navigation";
@@ -15,6 +18,10 @@ const ALLOWED_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 const MAX_BYTES = 5 * 1024 * 1024;
 
 type UploadState = {
+  // Holds whichever stable identifier the upload returned: an S3 key like
+  // `workers/<uuid>.png`, or a PerceptPixel cdn_url like
+  // `https://img.perceptpixel.com/<org-uid>/<filename>`. The handler is
+  // generic over which.
   key: string | null;
   uploading: boolean;
   error: string | null;
@@ -22,9 +29,10 @@ type UploadState = {
 
 const INITIAL_UPLOAD: UploadState = { key: null, uploading: false, error: null };
 
-// Upload a single file: POST /api/upload-url, then PUT to S3.
-// Returns the S3 key on success; throws on failure.
-async function uploadFile(file: File): Promise<string> {
+// Shared client-side validation. Throws with a user-readable message if the
+// file is the wrong type or too large. Both uploaders use this — no point
+// duplicating the same checks.
+function validateFile(file: File): void {
   if (!(ALLOWED_TYPES as readonly string[]).includes(file.type)) {
     throw new Error(
       `Unsupported type: ${file.type || "(unknown)"}. Use JPEG, PNG, or PDF.`
@@ -33,6 +41,12 @@ async function uploadFile(file: File): Promise<string> {
   if (file.size > MAX_BYTES) {
     throw new Error(`File too large (max ${MAX_BYTES / 1024 / 1024} MB).`);
   }
+}
+
+// Upload a single file to S3: POST /api/upload-url, then PUT to S3.
+// Returns the S3 key on success; throws on failure.
+async function uploadFileToS3(file: File): Promise<string> {
+  validateFile(file);
 
   // Step 1: ask our server for a presigned URL.
   const presignRes = await fetch("/api/upload-url", {
@@ -59,10 +73,36 @@ async function uploadFile(file: File): Promise<string> {
   return key;
 }
 
+// Upload a single file to PerceptPixel: POST multipart to our own server
+// proxy (which forwards to PerceptPixel with the Api-Key header). Returns
+// the cdn_url on success.
+async function uploadFileToPerceptPixel(file: File): Promise<string> {
+  validateFile(file);
+
+  const fd = new FormData();
+  fd.append("file", file);
+
+  const res = await fetch("/api/perceptpixel-upload", {
+    method: "POST",
+    body: fd,
+    // Don't set Content-Type — browser sets multipart/form-data; boundary=...
+  });
+  if (!res.ok) {
+    throw new Error(
+      `PerceptPixel upload failed: ${res.status} ${await res.text()}`
+    );
+  }
+  const { cdn_url } = (await res.json()) as { cdn_url: string };
+  return cdn_url;
+}
+
 export default function AddWorkerForm() {
   const router = useRouter();
   const [photo, setPhoto] = useState<UploadState>(INITIAL_UPLOAD);
   const [idDoc, setIdDoc] = useState<UploadState>(INITIAL_UPLOAD);
+  // V0.1.5 — third image source. Optional. If user doesn't pick a file,
+  // perceptpixel.key stays null and we send perceptpixel_url: null on submit.
+  const [perceptpixel, setPerceptpixel] = useState<UploadState>(INITIAL_UPLOAD);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,14 +112,17 @@ export default function AddWorkerForm() {
   // A's resolution overwrites B's state.
   const photoReqId = useRef(0);
   const idDocReqId = useRef(0);
+  const perceptpixelReqId = useRef(0);
 
   // Generic file-picker change handler. Sets state to "uploading", performs
-  // the upload, then sets state to either "success with key" or "error".
+  // the upload via the supplied uploader function, then sets state to either
+  // "success with key" or "error".
   // Using a ref for request id means we don't re-render on each pick — the
   // counter increments synchronously and the closure captures the value.
   const handleFileChange = (
     setState: (state: UploadState) => void,
-    reqIdRef: MutableRefObject<number>
+    reqIdRef: MutableRefObject<number>,
+    uploader: (file: File) => Promise<string>
   ) => async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     // Reset the input value so picking the SAME file twice (e.g. retry after
@@ -91,7 +134,7 @@ export default function AddWorkerForm() {
     const myReqId = ++reqIdRef.current;
     setState({ key: null, uploading: true, error: null });
     try {
-      const key = await uploadFile(file);
+      const key = await uploader(file);
       // If the user picked another file in the meantime, our result is stale.
       if (myReqId !== reqIdRef.current) return;
       setState({ key, uploading: false, error: null });
@@ -109,8 +152,8 @@ export default function AddWorkerForm() {
     e.preventDefault();
     setError(null);
 
-    if (photo.uploading || idDoc.uploading) {
-      setError("Wait for both files to finish uploading before saving.");
+    if (photo.uploading || idDoc.uploading || perceptpixel.uploading) {
+      setError("Wait for all files to finish uploading before saving.");
       return;
     }
     if (!photo.key || !idDoc.key) {
@@ -124,6 +167,8 @@ export default function AddWorkerForm() {
       monthly_salary: Number(formData.get("monthly_salary")),
       photo_key: photo.key,
       id_doc_key: idDoc.key,
+      // V0.1.5: optional. null is fine — column is nullable.
+      perceptpixel_url: perceptpixel.key ?? null,
     };
 
     if (!payload.name) {
@@ -186,7 +231,7 @@ export default function AddWorkerForm() {
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"
-          onChange={handleFileChange(setPhoto, photoReqId)}
+          onChange={handleFileChange(setPhoto, photoReqId, uploadFileToS3)}
           disabled={photo.uploading}
         />
         <UploadStatus state={photo} />
@@ -197,10 +242,23 @@ export default function AddWorkerForm() {
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"
-          onChange={handleFileChange(setIdDoc, idDocReqId)}
+          onChange={handleFileChange(setIdDoc, idDocReqId, uploadFileToS3)}
           disabled={idDoc.uploading}
         />
         <UploadStatus state={idDoc} />
+      </div>
+
+      <div>
+        <label style={labelStyle}>
+          PerceptPixel image (optional, V0.1.5 test) — JPEG / PNG / PDF, max 5 MB
+        </label>
+        <input
+          type="file"
+          accept="image/jpeg,image/png,application/pdf"
+          onChange={handleFileChange(setPerceptpixel, perceptpixelReqId, uploadFileToPerceptPixel)}
+          disabled={perceptpixel.uploading}
+        />
+        <UploadStatus state={perceptpixel} />
       </div>
 
       {error && (
@@ -211,7 +269,7 @@ export default function AddWorkerForm() {
 
       <button
         type="submit"
-        disabled={submitting || photo.uploading || idDoc.uploading}
+        disabled={submitting || photo.uploading || idDoc.uploading || perceptpixel.uploading}
         style={{
           padding: "0.6rem 1rem",
           fontSize: "1rem",
