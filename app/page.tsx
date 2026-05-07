@@ -16,7 +16,12 @@ import type { Worker, NCBListResponse } from "@/lib/types";
 async function fetchWorkers(): Promise<Worker[]> {
   // CONFIG is validated at module load in lib/ncb-utils.ts — if any required
   // env var is missing, that import would already have thrown at startup.
-  const url = `${CONFIG.dataApiUrl}/read/workers?Instance=${CONFIG.instance}`;
+  //
+  // `limit=200` because NCB's list endpoint defaults to `limit=10` when no
+  // limit is given — the 11th-onward workers get silently dropped. 200 is a
+  // generous cap for V0 scale (you, in dev, with tens of workers); when the
+  // list ever grows toward 200 we'll want real pagination + search anyway.
+  const url = `${CONFIG.dataApiUrl}/read/workers?Instance=${CONFIG.instance}&limit=200`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(
