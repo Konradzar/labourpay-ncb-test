@@ -7,8 +7,9 @@
 // state stores the returned keys. On submit, only the keys are sent to NCB
 // (no file bytes pass through our server).
 
-import { useState, FormEvent } from "react";
+import { useState, useRef, FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import type { MutableRefObject } from "react";
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -24,7 +25,7 @@ const INITIAL_UPLOAD: UploadState = { key: null, uploading: false, error: null }
 // Upload a single file: POST /api/upload-url, then PUT to S3.
 // Returns the S3 key on success; throws on failure.
 async function uploadFile(file: File): Promise<string> {
-  if (!ALLOWED_TYPES.includes(file.type as typeof ALLOWED_TYPES[number])) {
+  if (!(ALLOWED_TYPES as readonly string[]).includes(file.type)) {
     throw new Error(
       `Unsupported type: ${file.type || "(unknown)"}. Use JPEG, PNG, or PDF.`
     );
@@ -65,18 +66,37 @@ export default function AddWorkerForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Per-field "request id" counter. Each upload captures the id at start; on
+  // resolution, only commit state if the id is still current. Prevents the
+  // race where the user picks file A → picks file B before A finishes →
+  // A's resolution overwrites B's state.
+  const photoReqId = useRef(0);
+  const idDocReqId = useRef(0);
+
   // Generic file-picker change handler. Sets state to "uploading", performs
   // the upload, then sets state to either "success with key" or "error".
+  // Using a ref for request id means we don't re-render on each pick — the
+  // counter increments synchronously and the closure captures the value.
   const handleFileChange = (
-    setState: (state: UploadState) => void
+    setState: (state: UploadState) => void,
+    reqIdRef: MutableRefObject<number>
   ) => async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    // Reset the input value so picking the SAME file twice (e.g. retry after
+    // an upload error) still fires `change`. Without this, HTML file inputs
+    // suppress the event when the selected file is identical.
+    e.target.value = "";
     if (!file) return;
+
+    const myReqId = ++reqIdRef.current;
     setState({ key: null, uploading: true, error: null });
     try {
       const key = await uploadFile(file);
+      // If the user picked another file in the meantime, our result is stale.
+      if (myReqId !== reqIdRef.current) return;
       setState({ key, uploading: false, error: null });
     } catch (err) {
+      if (myReqId !== reqIdRef.current) return;
       setState({
         key: null,
         uploading: false,
@@ -125,9 +145,11 @@ export default function AddWorkerForm() {
       if (!res.ok) {
         throw new Error(`Save failed: ${res.status} ${await res.text()}`);
       }
-      // Success — go back to the list and refresh so the new row appears.
-      router.push("/");
+      // Success — refresh server-component data first so the destination's
+      // RSC fetch runs against fresh cache, THEN navigate. Reverse order
+      // (push then refresh) can briefly show the stale list before updating.
       router.refresh();
+      router.push("/");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -164,7 +186,7 @@ export default function AddWorkerForm() {
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"
-          onChange={handleFileChange(setPhoto)}
+          onChange={handleFileChange(setPhoto, photoReqId)}
           disabled={photo.uploading}
         />
         <UploadStatus state={photo} />
@@ -175,7 +197,7 @@ export default function AddWorkerForm() {
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"
-          onChange={handleFileChange(setIdDoc)}
+          onChange={handleFileChange(setIdDoc, idDocReqId)}
           disabled={idDoc.uploading}
         />
         <UploadStatus state={idDoc} />
