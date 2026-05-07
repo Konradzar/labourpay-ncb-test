@@ -14,6 +14,18 @@ const S3_BUCKET = process.env.S3_BUCKET_NAME!;
 const S3_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID!;
 const S3_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY!;
 
+// Fail loudly at module load if any S3 env var is missing. Without this, the
+// first S3 SDK call would throw a confusing "credential object is not valid"
+// error; with this, `next dev` startup fails immediately with a clear message
+// pointing at .env.local.
+if (!S3_REGION || !S3_BUCKET || !S3_ACCESS_KEY || !S3_SECRET_KEY) {
+  throw new Error(
+    "Missing S3 env vars. Required: AWS_REGION, S3_BUCKET_NAME, " +
+      "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY. " +
+      "Check .env.local against .env.local.example."
+  );
+}
+
 // Single shared S3 client — created at module load.
 const s3 = new S3Client({
   region: S3_REGION,
@@ -37,6 +49,15 @@ const ALLOWED_TYPES: Record<string, string> = {
 // 5 MB upload size limit (matches the existing Flatlogic app's WorkerForm).
 export const MAX_BYTES = 5 * 1024 * 1024;
 
+// Normalise a Content-Type header for allowlist lookup: lowercase + strip
+// any RFC-6838 parameters (e.g. "image/jpeg; charset=binary"). Browsers
+// generally send bare "image/jpeg" via <input type="file">, but non-browser
+// clients (curl, etc.) sometimes attach parameters. Normalising once keeps
+// the signed URL's Content-Type identical to what S3 will see at PUT time.
+function normalizeContentType(contentType: string): string {
+  return contentType.toLowerCase().split(";")[0].trim();
+}
+
 // === UPLOADS ===
 // Generates a presigned PUT URL plus the object key.
 // Browser PUTs the file directly to the URL, then sends `key` to the data proxy
@@ -44,7 +65,8 @@ export const MAX_BYTES = 5 * 1024 * 1024;
 export async function makeUploadUrl(opts: {
   contentType: string;
 }): Promise<{ url: string; key: string }> {
-  const ext = ALLOWED_TYPES[opts.contentType];
+  const normalized = normalizeContentType(opts.contentType);
+  const ext = ALLOWED_TYPES[normalized];
   if (!ext) {
     throw new Error(`Unsupported content type: ${opts.contentType}`);
   }
@@ -53,7 +75,7 @@ export async function makeUploadUrl(opts: {
   const command = new PutObjectCommand({
     Bucket: S3_BUCKET,
     Key: key,
-    ContentType: opts.contentType,
+    ContentType: normalized, // sign with the normalised value so PUT matches
   });
 
   const url = await getSignedUrl(s3, command, { expiresIn: 300 }); // 5 minutes
@@ -71,7 +93,8 @@ export async function makeDownloadUrl(key: string): Promise<string> {
 
 // Exposed for the API route to do its own type check before calling
 // makeUploadUrl. Keeps the route's error message richer than just
-// re-throwing makeUploadUrl's error.
+// re-throwing makeUploadUrl's error. Normalises the input the same way
+// makeUploadUrl does, so the two stay in lockstep.
 export function isAllowedContentType(contentType: string): boolean {
-  return contentType in ALLOWED_TYPES;
+  return normalizeContentType(contentType) in ALLOWED_TYPES;
 }
