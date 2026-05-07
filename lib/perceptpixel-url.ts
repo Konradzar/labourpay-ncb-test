@@ -46,6 +46,14 @@ export function perceptpixelThumbnailUrl(cdnUrl: string, size: number): string {
   }
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
   if (segments.length < 2) return cdnUrl;
+  // PerceptPixel transformations (in this account/org) only work for files
+  // inside a folder — root-level files (just <org>/<filename>, 2 segments)
+  // return 404 for any transformation URL, even though the original works.
+  // Empirically verified 2026-05-07: tried w_40/c_pad, w_40 alone, and
+  // f_jpg alone — all 404 at root, all 200 in folder.
+  // Fallback: return the original URL and let the rendering side use CSS
+  // to scale it down. Loses bandwidth efficiency but stays visually correct.
+  if (segments.length === 2) return cdnUrl;
   const [orgUid, ...rest] = segments;
   const transformation = `w_${size},h_${size},c_pad`;
   return `${url.origin}/${orgUid}/${transformation}/${rest.join("/")}`;
