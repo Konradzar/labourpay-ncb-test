@@ -232,3 +232,39 @@ export function requiresOwnerScope(policy?: string): boolean {
     ["public_scoped_read", "public_scoped_write", "public_scoped_readwrite"].includes(p)
   );
 }
+
+// === Server-side authenticated NCB fetch ===
+// Wraps the Bearer-auth pattern used by Server Components and Server Actions
+// when accessing privileged NCB endpoints (single-record reads, updates,
+// deletes). The secret key NEVER reaches the browser bundle — this helper is
+// safe to import only from server-only modules (Server Components, Server
+// Actions, Route Handlers).
+//
+// Pattern established in commit 1c91eb4 (worker detail page Bearer-auth fix).
+export async function ncbAuthFetch(
+  pathSuffix: string,
+  init: Omit<RequestInit, "headers"> & { headers?: Record<string, string> } = {}
+): Promise<Response> {
+  const secret = process.env.NCB_SECRET_KEY;
+  if (!secret) {
+    throw new Error(
+      "NCB_SECRET_KEY missing — required for server-side authenticated NCB calls. " +
+        "Check .env.local."
+    );
+  }
+
+  const url = `${CONFIG.dataApiUrl}${pathSuffix}${
+    pathSuffix.includes("?") ? "&" : "?"
+  }Instance=${CONFIG.instance}`;
+
+  return fetch(url, {
+    cache: "no-store",
+    ...init,
+    headers: {
+      Authorization: `Bearer ${secret}`,
+      "Content-Type": "application/json",
+      "X-Database-Instance": CONFIG.instance,
+      ...(init.headers ?? {}),
+    },
+  });
+}
