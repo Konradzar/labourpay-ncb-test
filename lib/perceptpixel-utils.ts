@@ -47,8 +47,7 @@ export type PerceptPixelUploadResult = {
 export async function uploadToPerceptPixel(
   fileData: ArrayBuffer,
   filename: string,
-  contentType: string,
-  folder?: string
+  contentType: string
 ): Promise<PerceptPixelUploadResult> {
   if (!(ALLOWED_TYPES as readonly string[]).includes(contentType)) {
     throw new Error(`Unsupported type: ${contentType}. Use JPEG, PNG, or PDF.`);
@@ -57,6 +56,13 @@ export async function uploadToPerceptPixel(
     throw new Error(`File too large (max ${PP_MAX_BYTES / 1024 / 1024} MB).`);
   }
 
+  // IMPORTANT: do NOT pass a `folder` field here. We tested it; PerceptPixel
+  // accepts the parameter happily but routes the resulting media into a
+  // folder-scoped namespace that is NOT addressable by /v1/media/<uid>.
+  // Both GET (view) and POST (annotations) return 404 for those uids.
+  // Solution: upload to root (file becomes queryable), tag, THEN call
+  // moveMediaToFolder() to relocate. See route.ts for the orchestration.
+  //
   // Node 18+ FormData accepts Blob. Pass the ArrayBuffer directly — it's
   // unambiguously a BlobPart in TS's BlobPart union (ArrayBuffer is one of
   // the valid options). Going via Uint8Array<ArrayBufferLike> trips strict
@@ -65,12 +71,6 @@ export async function uploadToPerceptPixel(
   const form = new FormData();
   form.append("file", new Blob([fileData], { type: contentType }), filename);
   form.append("name", filename);
-  // Optional `folder` field per PerceptPixel docs — when present, the
-  // uploaded file lands inside that folder in the dashboard. PerceptPixel
-  // auto-creates folders that don't exist yet, so no separate setup call.
-  if (folder) {
-    form.append("folder", folder);
-  }
 
   const res = await fetch(UPLOAD_URL, {
     method: "POST",
@@ -167,4 +167,59 @@ export async function addAnnotationsToMedia(
   }
 
   throw lastError ?? new Error("PerceptPixel annotations update failed: unknown");
+}
+
+// === Move (relocate to a folder) ===
+//
+// API: PUT https://api.perceptpixel.com/v1/media/<uid>/move
+//   Body: form-urlencoded `folder_name=<name>` (NOT JSON — see curl in docs)
+//   Auto-creates the folder if it doesn't exist.
+//   200 → {"status": "success"}
+//
+// Used after upload + tagging to relocate the file into its destination
+// folder. Done in this order because folder-scoped media isn't addressable
+// by /v1/media/<uid> for tagging — see the comment in uploadToPerceptPixel.
+//
+// Source: https://perceptpixel.com/docs/api/media/move-files
+
+const MOVE_URL = (uid: string) =>
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}/move`;
+
+export async function moveMediaToFolder(
+  uid: string,
+  folderName: string
+): Promise<void> {
+  // Same retry-on-404 indexing-race pattern as addAnnotationsToMedia. The
+  // move endpoint also looks up media by uid, so it can race the same way.
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [0, 500, 1000];
+
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (BACKOFF_MS[attempt - 1] > 0) {
+      await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]));
+    }
+
+    const res = await fetch(MOVE_URL(uid), {
+      method: "PUT",
+      headers: {
+        Authorization: `Api-Key ${API_KEY}`,
+        // Don't set Content-Type explicitly — URLSearchParams as body
+        // auto-sets application/x-www-form-urlencoded which is what
+        // PerceptPixel expects (per the curl example in their docs).
+      },
+      body: new URLSearchParams({ folder_name: folderName }),
+    });
+
+    if (res.ok) return;
+
+    const status = res.status;
+    const body = await res.text();
+    lastError = new Error(
+      `PerceptPixel move failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${status} ${body}`
+    );
+    if (status !== 404) break;
+  }
+
+  throw lastError ?? new Error("PerceptPixel move failed: unknown");
 }
