@@ -131,20 +131,40 @@ export async function addAnnotationsToMedia(
   uid: string,
   annotations: PerceptPixelAnnotations
 ): Promise<void> {
-  const res = await fetch(ANNOTATIONS_URL(uid), {
-    method: "POST",
-    headers: {
-      Authorization: `Api-Key ${API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(annotations),
-  });
+  // Retry on 404. PerceptPixel returns "No Media matches the given query"
+  // immediately after an upload while the media is still being indexed by
+  // their backend — especially noticeable when files land in a folder
+  // (folder assignment adds a step before the uid becomes queryable).
+  // Other status codes (401, 400, 500, etc.) won't improve with retry, so
+  // we break out on those.
+  const MAX_ATTEMPTS = 3;
+  const BACKOFF_MS = [0, 500, 1000]; // before attempts 1, 2, 3
 
-  if (!res.ok) {
-    throw new Error(
-      `PerceptPixel annotations update failed: ${res.status} ${await res.text()}`
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    if (BACKOFF_MS[attempt - 1] > 0) {
+      await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]));
+    }
+
+    const res = await fetch(ANNOTATIONS_URL(uid), {
+      method: "POST",
+      headers: {
+        Authorization: `Api-Key ${API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(annotations),
+    });
+
+    if (res.ok) return; // success; response body is the updated annotations,
+                        // not needed for fire-and-forget tagging.
+
+    const status = res.status;
+    const body = await res.text();
+    lastError = new Error(
+      `PerceptPixel annotations update failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${status} ${body}`
     );
+    if (status !== 404) break; // permanent failure, no point retrying
   }
-  // Response body is the updated annotations; we don't need it for fire-and-
-  // forget tagging, so we don't read it.
+
+  throw lastError ?? new Error("PerceptPixel annotations update failed: unknown");
 }
