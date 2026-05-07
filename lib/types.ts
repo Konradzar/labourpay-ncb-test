@@ -48,3 +48,14 @@ export type NCBCreateResponse = {
   message?: string;
   id?: number;
 };
+
+// Input shape for the updateWorker Server Action. Mirrors the writable subset
+// of Worker (omits id, which is path-bound, and user_id, which V0.1 doesn't
+// modify — set at creation only). monthly_salary is `number` here because
+// the form sends a JS number; NCB returns it as a string on read.
+export type WorkerUpdateInput = {
+  name: string;
+  monthly_salary: number;
+  photo_key: string;
+  id_doc_key: string;
+};
