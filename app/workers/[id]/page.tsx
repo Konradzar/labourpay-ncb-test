@@ -10,35 +10,18 @@
 
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { CONFIG } from "@/lib/ncb-utils";
+import { ncbAuthFetch } from "@/lib/ncb-utils";
 import { makeDownloadUrl } from "@/lib/s3-utils";
 import type { Worker, NCBSingleResponse } from "@/lib/types";
 
 async function fetchWorker(id: string): Promise<Worker | null> {
-  // We use NCB's single-record endpoint /read/workers/<id> with the
-  // NCB_SECRET_KEY as a Bearer token (server-side only — never sent to the
-  // browser). The previous "list with ?id=<id> filter" workaround returned
-  // 500 because NCB's list endpoint only accepts filters on the columns
-  // {name, monthly_salary, photo_key, id_doc_key, user_id} — the `id`
-  // primary key is NOT a filterable query param. With auth, the
-  // single-record endpoint works correctly.
-  const secret = process.env.NCB_SECRET_KEY;
-  if (!secret) {
-    throw new Error(
-      "NCB_SECRET_KEY missing — required for server-side single-record reads. " +
-        "Check .env.local."
-    );
-  }
-
-  const url = `${CONFIG.dataApiUrl}/read/workers/${encodeURIComponent(id)}?Instance=${CONFIG.instance}`;
-  const res = await fetch(url, {
-    cache: "no-store",
-    headers: {
-      "Authorization": `Bearer ${secret}`,
-      "Content-Type": "application/json",
-      "X-Database-Instance": CONFIG.instance,
-    },
-  });
+  // NCB's single-record endpoint /read/workers/<id> requires Bearer auth
+  // (server-side only — never sent to the browser). See ncbAuthFetch in
+  // lib/ncb-utils.ts. The previous "list with ?id=<id> filter" workaround
+  // returned 500 because NCB's list endpoint only accepts filters on the
+  // columns {name, monthly_salary, photo_key, id_doc_key, user_id} —
+  // the `id` primary key is NOT a filterable query param.
+  const res = await ncbAuthFetch(`/read/workers/${encodeURIComponent(id)}`);
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(
