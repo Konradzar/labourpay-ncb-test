@@ -11,22 +11,37 @@ Cross-reference with [`docs/plans/2026-05-07-worker-profile-slice-plan.md`](plan
 
 UI code (Tasks 8 + 10) must handle the `data: [...]` envelope, not assume the JSON is a bare array.
 
-## Single-record endpoint requires auth — workaround uses list filter
+## Single-record endpoint requires auth (Bearer token)
 
-NCB's documented single-record endpoint `/read/<table>/<id>` returns **HTTP 500** for anonymous requests even when the table RLS policy is `public_read*` — discovered during Task 10's smoke test on `/read/workers/1`. The list endpoint `/read/<table>` correctly honors public RLS policies AND supports column filtering via query parameters.
+NCB's `/read/<table>/<id>` endpoint requires authentication — it returns HTTP 500 for fully-anonymous requests, even on tables with `public_read*` policy. The list endpoint (`/read/<table>`) honors public RLS policies for anonymous access, but the single-record endpoint apparently doesn't.
 
-**Workaround**: filter the list endpoint by primary key:
+**The fix**: server-side calls to `/read/<table>/<id>` use `NCB_SECRET_KEY` as a Bearer token. The secret key is server-only (never reaches the browser), and authenticates as a service-level identity that bypasses anonymous restrictions.
 
 ```typescript
-// instead of:
-//   GET /read/workers/<id>?Instance=<inst>           ← 500 anonymous
-// use:
-//   GET /read/workers?Instance=<inst>&id=<id>         ← works
+// Server Component pattern (e.g. app/workers/[id]/page.tsx):
+const url = `${CONFIG.dataApiUrl}/read/workers/${id}?Instance=${CONFIG.instance}`;
+const res = await fetch(url, {
+  cache: "no-store",
+  headers: {
+    "Authorization": `Bearer ${process.env.NCB_SECRET_KEY}`,
+    "Content-Type": "application/json",
+    "X-Database-Instance": CONFIG.instance,
+  },
+});
 ```
 
-The filter returns either `data: [<row>]` (one match) or `data: []` (no match). `app/workers/[id]/page.tsx` handles both shapes.
+### Why the earlier `?id=<id>` filter workaround was wrong
 
-If NCB later fixes the single-record endpoint for anonymous requests, we can revert to the simpler URL — the response-shape branch in `fetchWorker` already accepts both `data: <object>` and `data: [<object>]`.
+The Task 10 implementer initially tried `GET /read/workers?Instance=<inst>&id=<id>` thinking the list endpoint would filter by primary key. **It does not.** NCB's list filtering only accepts these column names: `name, monthly_salary, photo_key, id_doc_key, user_id`. The `id` column is NOT a filterable query parameter, and passing it returns **HTTP 500** (not an empty list, which would be the more useful behaviour). The 500 cascade then crashed the Next.js worker pool with the misleading "Jest worker encountered 2 child process exceptions" generic error in the browser.
+
+**Correct list-filter usage** (for the columns NCB does accept):
+
+```typescript
+GET /read/workers?Instance=<inst>&name=Konrad   // works (filters by name)
+GET /read/workers?Instance=<inst>&id=4          // returns 500 — not allowed
+```
+
+Discovered during V0 manual smoke test (07-May-2026), fixed in `app/workers/[id]/page.tsx`.
 
 ## `DECIMAL` columns store as integer strings
 

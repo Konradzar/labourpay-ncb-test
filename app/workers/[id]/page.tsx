@@ -15,17 +15,30 @@ import { makeDownloadUrl } from "@/lib/s3-utils";
 import type { Worker, NCBSingleResponse } from "@/lib/types";
 
 async function fetchWorker(id: string): Promise<Worker | null> {
-  // Why list-with-filter instead of /read/workers/<id>:
-  // NCB's documented single-record endpoint (/read/workers/{id}) returns
-  // HTTP 500 for anonymous (no-bearer-token) requests, even when the table
-  // RLS policy includes public_read. The list endpoint (/read/workers)
-  // honors public_read correctly, AND supports column filters via query
-  // string per the OpenAPI spec ("Available columns: name, monthly_salary,
-  // photo_key, id_doc_key, user_id" — and the id column is filterable too
-  // since it's the primary key). Filtering by id returns at most one row.
-  // Discovered during Task 10 smoke test (07-May-2026).
-  const url = `${CONFIG.dataApiUrl}/read/workers?Instance=${CONFIG.instance}&id=${encodeURIComponent(id)}`;
-  const res = await fetch(url, { cache: "no-store" });
+  // We use NCB's single-record endpoint /read/workers/<id> with the
+  // NCB_SECRET_KEY as a Bearer token (server-side only — never sent to the
+  // browser). The previous "list with ?id=<id> filter" workaround returned
+  // 500 because NCB's list endpoint only accepts filters on the columns
+  // {name, monthly_salary, photo_key, id_doc_key, user_id} — the `id`
+  // primary key is NOT a filterable query param. With auth, the
+  // single-record endpoint works correctly.
+  const secret = process.env.NCB_SECRET_KEY;
+  if (!secret) {
+    throw new Error(
+      "NCB_SECRET_KEY missing — required for server-side single-record reads. " +
+        "Check .env.local."
+    );
+  }
+
+  const url = `${CONFIG.dataApiUrl}/read/workers/${encodeURIComponent(id)}?Instance=${CONFIG.instance}`;
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "Authorization": `Bearer ${secret}`,
+      "Content-Type": "application/json",
+      "X-Database-Instance": CONFIG.instance,
+    },
+  });
   if (res.status === 404) return null;
   if (!res.ok) {
     throw new Error(
@@ -34,10 +47,8 @@ async function fetchWorker(id: string): Promise<Worker | null> {
   }
   const json = (await res.json()) as NCBSingleResponse<Worker> | { data?: Worker[] };
 
-  // NCB MAY return the row as `data: <object>` or `data: [<object>]`.
-  // With our list-filter workaround above we get `data: [<object>]` (or
-  // `data: []` if no row matched), but keep the bare-object branch too in
-  // case NCB later fixes /read/workers/{id} and we revert to that.
+  // NCB may return the row as `data: <object>` or `data: [<object>]`.
+  // Handle both shapes defensively.
   const data = (json as { data?: unknown }).data;
   if (!data) return null;
   if (Array.isArray(data)) {
