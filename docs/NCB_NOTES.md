@@ -3,6 +3,26 @@
 Findings from the actual NCB integration that change the original plan.
 Cross-reference with [`docs/plans/2026-05-07-worker-profile-slice-plan.md`](plans/2026-05-07-worker-profile-slice-plan.md) for the original blueprint.
 
+## NCB response shapes (discovered via Task 6 smoke test)
+
+- **List read**: `{ status: "success", data: [...rows], metadata: { page, limit, hasMore, hasPrev } }` — rows live under `body.data`.
+- **Create**: `{ status: "success", message: "Record created successfully", id: <new_id> }` with **HTTP 201** (not 200). New row's id is at `body.id`.
+- **Error envelope (from our route)**: `{ error: "..." }` with appropriate 4xx status. NCB's own errors may differ — we'll see them as we go.
+
+UI code (Tasks 8 + 10) must handle the `data: [...]` envelope, not assume the JSON is a bare array.
+
+## `DECIMAL` columns store as integer strings
+
+We created `workers.monthly_salary` with type `DECIMAL` via `create_database`. Empirically NCB's `DECIMAL` rounds to the nearest integer AND returns the value as a JSON string, not a number.
+
+Posted `1234.50` → NCB returned `"1235"`.
+
+**Implication for V0**:
+- Salary input in Task 9's form should use `step="1"` (whole rands), not `step="0.01"`.
+- All numeric fields from NCB need `Number(...)` coercion before arithmetic in TypeScript.
+
+This is acceptable for FoxFitt's actual data (field-worker salaries are whole rand amounts in the existing Flatlogic app). If we later want fractional cents we'd need to investigate NCB's `DECIMAL` precision options or store cents as INT (and divide by 100 in UI).
+
 ## Instance name has account-id prefix
 
 NCB prefixed our database with the account ID: the actual instance name is
