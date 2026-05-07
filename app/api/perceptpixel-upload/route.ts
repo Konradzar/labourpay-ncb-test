@@ -45,14 +45,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const buffer = Buffer.from(await file.arrayBuffer());
+  // Pass ArrayBuffer end-to-end (skip Buffer + Uint8Array indirection) so the
+  // strict BlobPart typing inside uploadToPerceptPixel is satisfied without
+  // generic-parameter narrowing tricks.
+  const arrayBuffer = await file.arrayBuffer();
   // file.name is browser-supplied; default if absent. PerceptPixel uses this
   // as the filename component of the resulting cdn_url.
   const filename = (file as File).name || "upload";
   const contentType = file.type || "application/octet-stream";
 
   try {
-    const result = await uploadToPerceptPixel(buffer, filename, contentType);
+    const result = await uploadToPerceptPixel(arrayBuffer, filename, contentType);
     return NextResponse.json({ cdn_url: result.cdn_url, uid: result.uid });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";

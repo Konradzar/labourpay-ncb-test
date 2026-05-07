@@ -45,22 +45,24 @@ export type PerceptPixelUploadResult = {
 };
 
 export async function uploadToPerceptPixel(
-  fileBuffer: Buffer,
+  fileData: ArrayBuffer,
   filename: string,
   contentType: string
 ): Promise<PerceptPixelUploadResult> {
   if (!(ALLOWED_TYPES as readonly string[]).includes(contentType)) {
     throw new Error(`Unsupported type: ${contentType}. Use JPEG, PNG, or PDF.`);
   }
-  if (fileBuffer.byteLength > PP_MAX_BYTES) {
+  if (fileData.byteLength > PP_MAX_BYTES) {
     throw new Error(`File too large (max ${PP_MAX_BYTES / 1024 / 1024} MB).`);
   }
 
-  // Node 18+ FormData accepts Blob. Construct one from the buffer so the
-  // multipart body is properly framed. Setting type on the Blob ensures the
-  // multipart Content-Type for this part matches what PerceptPixel expects.
+  // Node 18+ FormData accepts Blob. Pass the ArrayBuffer directly — it's
+  // unambiguously a BlobPart in TS's BlobPart union (ArrayBuffer is one of
+  // the valid options). Going via Uint8Array<ArrayBufferLike> trips strict
+  // typing because of the SharedArrayBuffer corner case in the generic
+  // default.
   const form = new FormData();
-  form.append("file", new Blob([fileBuffer], { type: contentType }), filename);
+  form.append("file", new Blob([fileData], { type: contentType }), filename);
   form.append("name", filename);
 
   const res = await fetch(UPLOAD_URL, {
