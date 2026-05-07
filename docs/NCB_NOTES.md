@@ -11,6 +11,23 @@ Cross-reference with [`docs/plans/2026-05-07-worker-profile-slice-plan.md`](plan
 
 UI code (Tasks 8 + 10) must handle the `data: [...]` envelope, not assume the JSON is a bare array.
 
+## Single-record endpoint requires auth — workaround uses list filter
+
+NCB's documented single-record endpoint `/read/<table>/<id>` returns **HTTP 500** for anonymous requests even when the table RLS policy is `public_read*` — discovered during Task 10's smoke test on `/read/workers/1`. The list endpoint `/read/<table>` correctly honors public RLS policies AND supports column filtering via query parameters.
+
+**Workaround**: filter the list endpoint by primary key:
+
+```typescript
+// instead of:
+//   GET /read/workers/<id>?Instance=<inst>           ← 500 anonymous
+// use:
+//   GET /read/workers?Instance=<inst>&id=<id>         ← works
+```
+
+The filter returns either `data: [<row>]` (one match) or `data: []` (no match). `app/workers/[id]/page.tsx` handles both shapes.
+
+If NCB later fixes the single-record endpoint for anonymous requests, we can revert to the simpler URL — the response-shape branch in `fetchWorker` already accepts both `data: <object>` and `data: [<object>]`.
+
 ## `DECIMAL` columns store as integer strings
 
 We created `workers.monthly_salary` with type `DECIMAL` via `create_database`. Empirically NCB's `DECIMAL` rounds to the nearest integer AND returns the value as a JSON string, not a number.
