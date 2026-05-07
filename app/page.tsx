@@ -1,66 +1,110 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+// app/page.tsx
+//
+// Workers list — Server Component (no "use client"). Fetches the workers
+// list directly from NCB at request time and renders as a simple table.
+//
+// Why direct NCB fetch (not /api/public-data/ proxy): Server Components
+// run server-side and can't use relative URLs. Calling NCB directly is
+// straightforward and avoids a self-fetch detour. NCB's server-side
+// policy check enforces RLS regardless. The /api/public-data/ proxy is
+// for browser code (Task 9's form).
 
-export default function Home() {
+import Link from "next/link";
+
+type Worker = {
+  id: number;
+  name: string;
+  monthly_salary: string; // NCB returns DECIMAL columns as strings — coerce on render.
+  photo_key: string | null;
+  id_doc_key: string | null;
+};
+
+type NCBListResponse = {
+  status?: string;
+  data?: Worker[];
+  metadata?: { page: number; limit: number; hasMore: boolean; hasPrev: boolean };
+};
+
+async function fetchWorkers(): Promise<Worker[]> {
+  const url = `${process.env.NCB_DATA_API_URL}/read/workers?Instance=${process.env.NCB_INSTANCE}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(
+      `NCB list workers failed: ${res.status} ${await res.text()}`
+    );
+  }
+  const json = (await res.json()) as NCBListResponse;
+  return json.data ?? [];
+}
+
+// Format an integer rand amount as "R 1 234" (South African style — space
+// thousand-separator, no decimal). NCB stored monthly_salary as INT despite
+// our DECIMAL request, so values are always whole rands. See docs/NCB_NOTES.md.
+function formatRand(value: string | number): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "R —";
+  return `R ${Math.round(n).toLocaleString("en-ZA")}`;
+}
+
+export default async function WorkersPage() {
+  const workers = await fetchWorkers();
+
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.tsx file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+    <main
+      style={{
+        maxWidth: 720,
+        margin: "2rem auto",
+        padding: "0 1rem",
+        fontFamily: "system-ui, sans-serif",
+      }}
+    >
+      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: "1rem" }}>
+        <h1 style={{ margin: 0 }}>Workers</h1>
+        <Link
+          href="/workers/new"
+          style={{
+            padding: "0.5rem 0.9rem",
+            background: "#1a73e8",
+            color: "white",
+            textDecoration: "none",
+            borderRadius: 6,
+            fontSize: "0.95rem",
+          }}
+        >
+          + Add Worker
+        </Link>
+      </header>
+
+      {workers.length === 0 ? (
+        <p style={{ color: "#666" }}>No workers yet. Click <em>+ Add Worker</em> to create one.</p>
+      ) : (
+        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+          <thead>
+            <tr style={{ borderBottom: "2px solid #333", textAlign: "left" }}>
+              <th style={{ padding: "0.5rem" }}>Name</th>
+              <th style={{ padding: "0.5rem", textAlign: "right" }}>Monthly salary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workers.map((w) => (
+              <tr key={w.id} style={{ borderBottom: "1px solid #ddd" }}>
+                <td style={{ padding: "0.5rem" }}>
+                  <Link href={`/workers/${w.id}`} style={{ color: "#1a73e8", textDecoration: "none" }}>
+                    {w.name}
+                  </Link>
+                </td>
+                <td style={{ padding: "0.5rem", textAlign: "right" }}>
+                  {formatRand(w.monthly_salary)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <footer style={{ marginTop: "2rem", fontSize: "0.85rem", color: "#888" }}>
+        {workers.length} worker{workers.length === 1 ? "" : "s"}
+      </footer>
+    </main>
   );
 }
