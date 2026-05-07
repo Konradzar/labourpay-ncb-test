@@ -22,6 +22,7 @@ import {
   moveMediaToFolder,
   PP_MAX_BYTES,
 } from "@/lib/perceptpixel-utils";
+import { relocateCdnUrl } from "@/lib/perceptpixel-url";
 
 // Workers-specific post-upload metadata: tag + destination folder. Each new
 // per-table upload route (projects, teams, etc.) gets its own constants.
@@ -95,16 +96,24 @@ export async function POST(req: NextRequest) {
     // Step 3 — move into the Workers folder. Same fire-and-forget posture:
     // if move fails, the image is uploaded + tagged but sits in the root.
     // User can manually relocate via the dashboard if it matters.
+    //
+    // Crucially: when move SUCCEEDS, the file is now at <org>/Workers/<filename>
+    // but `result.cdn_url` from step 1 still points at <org>/<filename>. We
+    // construct the post-move URL and return THAT to the browser, so the
+    // value stored in NCB matches the file's actual location.
+    let cdn_url = result.cdn_url;
     try {
       await moveMediaToFolder(result.uid, WORKERS_FOLDER);
+      cdn_url = relocateCdnUrl(result.cdn_url, WORKERS_FOLDER);
     } catch (moveErr) {
       console.warn(
         `[perceptpixel-upload] move-to-folder failed for uid=${result.uid}:`,
         moveErr instanceof Error ? moveErr.message : moveErr
       );
+      // cdn_url stays as the root-level URL — file is at root, URL matches.
     }
 
-    return NextResponse.json({ cdn_url: result.cdn_url, uid: result.uid });
+    return NextResponse.json({ cdn_url, uid: result.uid });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     // 502 = upstream (PerceptPixel) gave us something we couldn't translate.

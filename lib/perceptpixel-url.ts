@@ -37,6 +37,32 @@
  * If the input is malformed (not a valid URL, or has fewer than 2 path
  * segments), returns it unchanged.
  */
+/**
+ * Rewrite a root-level cdn_url to reflect a folder-relocated file.
+ *
+ * After our route does upload→tag→move, the file lives at
+ *   https://img.perceptpixel.com/<org>/<folder>/<filename>
+ * but the cdn_url returned by the upload step still says
+ *   https://img.perceptpixel.com/<org>/<filename>
+ *
+ * This helper inserts the folder as a path segment between org-uid and
+ * filename. If the URL already has 3+ segments (file already in a folder
+ * per its URL shape), we leave it alone — caller probably already accounted
+ * for the new location.
+ */
+export function relocateCdnUrl(cdnUrl: string, folderName: string): string {
+  let url: URL;
+  try {
+    url = new URL(cdnUrl);
+  } catch {
+    return cdnUrl;
+  }
+  const segments = url.pathname.split("/").filter((s) => s.length > 0);
+  if (segments.length !== 2) return cdnUrl;
+  const [orgUid, filename] = segments;
+  return `${url.origin}/${orgUid}/${encodeURIComponent(folderName)}/${filename}`;
+}
+
 export function perceptpixelThumbnailUrl(cdnUrl: string, size: number): string {
   let url: URL;
   try {
