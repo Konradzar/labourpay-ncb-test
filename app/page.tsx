@@ -10,30 +10,20 @@
 // for browser code (Task 9's form).
 
 import Link from "next/link";
-
-type Worker = {
-  id: number;
-  name: string;
-  monthly_salary: string; // NCB returns DECIMAL columns as strings — coerce on render.
-  photo_key: string | null;
-  id_doc_key: string | null;
-};
-
-type NCBListResponse = {
-  status?: string;
-  data?: Worker[];
-  metadata?: { page: number; limit: number; hasMore: boolean; hasPrev: boolean };
-};
+import { CONFIG } from "@/lib/ncb-utils";
+import type { Worker, NCBListResponse } from "@/lib/types";
 
 async function fetchWorkers(): Promise<Worker[]> {
-  const url = `${process.env.NCB_DATA_API_URL}/read/workers?Instance=${process.env.NCB_INSTANCE}`;
+  // CONFIG is validated at module load in lib/ncb-utils.ts — if any required
+  // env var is missing, that import would already have thrown at startup.
+  const url = `${CONFIG.dataApiUrl}/read/workers?Instance=${CONFIG.instance}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(
       `NCB list workers failed: ${res.status} ${await res.text()}`
     );
   }
-  const json = (await res.json()) as NCBListResponse;
+  const json = (await res.json()) as NCBListResponse<Worker>;
   return json.data ?? [];
 }
 

@@ -18,6 +18,17 @@ export const CONFIG = {
   appUrl: process.env.NCB_APP_URL || "https://app.nocodebackend.com",
 };
 
+// Fail loudly at module load if any required NCB env var is missing. Without
+// this, calls to NCB silently produce URLs containing literal "undefined" and
+// fail with confusing 4xx errors at request time. With this, `next dev`
+// startup throws a clear message pointing at .env.local.
+if (!CONFIG.instance || !CONFIG.dataApiUrl || !CONFIG.authApiUrl) {
+  throw new Error(
+    "Missing required NCB env vars. Required: NCB_INSTANCE, NCB_DATA_API_URL, " +
+      "NCB_AUTH_API_URL. Check .env.local against .env.local.example."
+  );
+}
+
 // === Cookie helpers ===
 // NCB uses Better Auth, which stores session info in cookies named
 // "better-auth.session_token" and "better-auth.session_data".
