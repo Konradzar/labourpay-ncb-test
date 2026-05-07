@@ -47,7 +47,8 @@ export type PerceptPixelUploadResult = {
 export async function uploadToPerceptPixel(
   fileData: ArrayBuffer,
   filename: string,
-  contentType: string
+  contentType: string,
+  folder?: string
 ): Promise<PerceptPixelUploadResult> {
   if (!(ALLOWED_TYPES as readonly string[]).includes(contentType)) {
     throw new Error(`Unsupported type: ${contentType}. Use JPEG, PNG, or PDF.`);
@@ -64,6 +65,12 @@ export async function uploadToPerceptPixel(
   const form = new FormData();
   form.append("file", new Blob([fileData], { type: contentType }), filename);
   form.append("name", filename);
+  // Optional `folder` field per PerceptPixel docs — when present, the
+  // uploaded file lands inside that folder in the dashboard. PerceptPixel
+  // auto-creates folders that don't exist yet, so no separate setup call.
+  if (folder) {
+    form.append("folder", folder);
+  }
 
   const res = await fetch(UPLOAD_URL, {
     method: "POST",

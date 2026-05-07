@@ -22,14 +22,16 @@ import {
   PP_MAX_BYTES,
 } from "@/lib/perceptpixel-utils";
 
-// Tag every image uploaded via this workers-specific route with "worker".
-// If/when we add other table-specific upload routes (projects, etc.), each
-// route applies its own tag. Hard-coded here rather than passed from the
-// client so the client can't lie about which table the upload belongs to.
+// Tag every image uploaded via this workers-specific route with "worker"
+// AND store it in the "Workers" folder on PerceptPixel. If/when we add other
+// table-specific upload routes (projects, etc.), each route applies its own
+// tag and folder. Hard-coded here rather than passed from the client so the
+// client can't lie about which table the upload belongs to.
 const WORKERS_TAG: { name: string; confidence: number } = {
   name: "worker",
   confidence: 1.0,
 };
+const WORKERS_FOLDER = "Workers";
 
 export async function POST(req: NextRequest) {
   let formData: FormData;
@@ -68,7 +70,12 @@ export async function POST(req: NextRequest) {
   const contentType = file.type || "application/octet-stream";
 
   try {
-    const result = await uploadToPerceptPixel(arrayBuffer, filename, contentType);
+    const result = await uploadToPerceptPixel(
+      arrayBuffer,
+      filename,
+      contentType,
+      WORKERS_FOLDER
+    );
 
     // Auto-tag the uploaded media with "worker". This is fire-and-forget by
     // design: if tagging fails (transient network blip, PerceptPixel hiccup),
