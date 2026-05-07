@@ -11,7 +11,12 @@
 
 import Link from "next/link";
 import { CONFIG } from "@/lib/ncb-utils";
+import { perceptpixelThumbnailUrl } from "@/lib/perceptpixel-url";
 import type { Worker, NCBListResponse } from "@/lib/types";
+
+// V0.1.5 — thumbnail size in pixels for the list-row preview. Square. 40px
+// reads well in a table row without overwhelming the name column.
+const THUMB_PX = 40;
 
 async function fetchWorkers(): Promise<Worker[]> {
   // CONFIG is validated at module load in lib/ncb-utils.ts — if any required
@@ -84,9 +89,41 @@ export default async function WorkersPage() {
             {workers.map((w) => (
               <tr key={w.id} style={{ borderBottom: "1px solid #ddd" }}>
                 <td style={{ padding: "0.5rem" }}>
-                  <Link href={`/workers/${w.id}`} style={{ color: "#1a73e8", textDecoration: "none" }}>
-                    {w.name}
-                  </Link>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                    {/* Fixed-width slot keeps the Name column aligned whether
+                        or not a worker has a perceptpixel_url. Workers without
+                        an image render an empty same-size placeholder div. */}
+                    {w.perceptpixel_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={perceptpixelThumbnailUrl(w.perceptpixel_url, THUMB_PX)}
+                        alt=""
+                        width={THUMB_PX}
+                        height={THUMB_PX}
+                        loading="lazy"
+                        style={{
+                          width: THUMB_PX,
+                          height: THUMB_PX,
+                          objectFit: "cover",
+                          borderRadius: 4,
+                          border: "1px solid #ddd",
+                          flexShrink: 0,
+                        }}
+                      />
+                    ) : (
+                      <div
+                        aria-hidden
+                        style={{
+                          width: THUMB_PX,
+                          height: THUMB_PX,
+                          flexShrink: 0,
+                        }}
+                      />
+                    )}
+                    <Link href={`/workers/${w.id}`} style={{ color: "#1a73e8", textDecoration: "none" }}>
+                      {w.name}
+                    </Link>
+                  </div>
                 </td>
                 <td style={{ padding: "0.5rem", textAlign: "right" }}>
                   {formatRand(w.monthly_salary)}
