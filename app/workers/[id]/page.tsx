@@ -13,6 +13,7 @@ import { notFound } from "next/navigation";
 import { ncbAuthFetch } from "@/lib/ncb-utils";
 import { makeDownloadUrl } from "@/lib/s3-utils";
 import type { Worker, NCBSingleResponse } from "@/lib/types";
+import { DeleteWorkerButton } from "./DeleteWorkerButton";
 
 async function fetchWorker(id: string): Promise<Worker | null> {
   // NCB's single-record endpoint /read/workers/<id> requires Bearer auth
@@ -123,7 +124,17 @@ export default async function WorkerDetailPage({
         )}
       </section>
 
-      <footer style={{ marginTop: "3rem", fontSize: "0.85rem", color: "#aaa" }}>
+      <section
+        style={{
+          marginTop: "2.5rem",
+          paddingTop: "1rem",
+          borderTop: "1px solid #ddd",
+        }}
+      >
+        <DeleteWorkerButton id={worker.id} name={worker.name} />
+      </section>
+
+      <footer style={{ marginTop: "1.5rem", fontSize: "0.85rem", color: "#aaa" }}>
         Worker id: {worker.id}
       </footer>
     </main>
