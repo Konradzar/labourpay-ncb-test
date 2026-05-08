@@ -12,7 +12,6 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { ncbAuthFetch } from "@/lib/ncb-utils";
-import type { NCBCreateResponse } from "@/lib/types";
 
 export type CreateWorkerInput = {
   name: string;
@@ -54,11 +53,6 @@ export async function createWorker(input: CreateWorkerInput): Promise<void> {
       `NCB create worker failed: ${res.status} ${await res.text()}`
     );
   }
-
-  // Read the response defensively — Next.js will discard the parsed body if
-  // we redirect, but parsing it lets server logs show a meaningful id on
-  // success. Cast through unknown to avoid an unused-var lint.
-  void ((await res.json()) as NCBCreateResponse);
 
   revalidatePath("/");
   redirect("/");
