@@ -7,7 +7,6 @@
 // IMPORTANT: All env vars referenced here are server-only. NEVER prefix any
 // of these with NEXT_PUBLIC_ — that would expose them to the browser bundle.
 
-import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 
 // === Configuration loaded from env vars ===
@@ -76,44 +75,6 @@ export async function getSessionUser(
     return data.user || null;
   }
   return null;
-}
-
-// === Authenticated proxy ===
-// Forwards a request to NCB's data API WITH auth cookies. Used by the
-// session-required /api/data/[...path] route (not used in V0).
-export async function proxyToNCB(
-  req: NextRequest,
-  path: string,
-  body?: string
-) {
-  const searchParams = new URLSearchParams();
-  searchParams.set("Instance", CONFIG.instance);
-  // Pass through any other query params from the original request
-  req.nextUrl.searchParams.forEach((val, key) => {
-    if (key !== "Instance") searchParams.append(key, val);
-  });
-
-  const url = `${CONFIG.dataApiUrl}/${path}?${searchParams.toString()}`;
-  const origin = req.headers.get("origin") || req.nextUrl.origin;
-  const cookieHeader = req.headers.get("cookie") || "";
-  const authCookies = extractAuthCookies(cookieHeader);
-
-  const res = await fetch(url, {
-    method: req.method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Database-Instance": CONFIG.instance,
-      "Cookie": authCookies,
-      "Origin": origin,
-    },
-    body: body || undefined,
-  });
-
-  const data = await res.text();
-  return new NextResponse(data, {
-    status: res.status,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 // === Server-side authenticated NCB fetch ===

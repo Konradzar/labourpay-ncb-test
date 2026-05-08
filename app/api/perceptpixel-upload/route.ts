@@ -7,7 +7,7 @@
 // stays out of the browser bundle), and return { cdn_url, uid } to the client.
 //
 // On success the client stores cdn_url in form state and includes it as
-// `perceptpixel_url` in the /api/public-data/create/workers POST body.
+// `perceptpixel_url` when invoking the createWorker Server Action.
 //
 // This route exists ONLY because PerceptPixel's auth (Api-Key header) cannot
 // be safely used from browser JavaScript. Compare with /api/upload-url which

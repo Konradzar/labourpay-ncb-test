@@ -1,13 +1,8 @@
 // app/page.tsx
 //
 // Workers list — Server Component (no "use client"). Fetches the workers
-// list directly from NCB at request time and renders as a simple table.
-//
-// Why direct NCB fetch (not /api/public-data/ proxy): Server Components
-// run server-side and can't use relative URLs. Calling NCB directly is
-// straightforward and avoids a self-fetch detour. NCB's server-side
-// policy check enforces RLS regardless. The /api/public-data/ proxy is
-// for browser code (Task 9's form).
+// list from NCB at request time via ncbAuthFetch (Bearer + session cookies)
+// and renders as a simple table.
 
 import Link from "next/link";
 import { ncbAuthFetch } from "@/lib/ncb-utils";

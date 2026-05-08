@@ -1,12 +1,9 @@
 // app/workers/[id]/page.tsx
 //
-// Worker detail — Server Component. Fetches the worker by id from NCB,
-// generates presigned download URLs for the photo + ID doc, and renders.
-// 404 if NCB doesn't return a row for the id.
-//
-// Why direct NCB fetch (not /api/public-data/ proxy): same reason as the
-// list page — Server Components can't use relative URLs cleanly. NCB enforces
-// RLS server-side regardless. The public-data proxy is for browser code.
+// Worker detail — Server Component. Fetches the worker by id from NCB via
+// ncbAuthFetch (Bearer + session cookies), generates presigned download URLs
+// for the photo + ID doc, and renders. 404 if NCB doesn't return a row for
+// the id.
 
 import Link from "next/link";
 import { notFound } from "next/navigation";

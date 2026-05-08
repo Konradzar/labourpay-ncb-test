@@ -13,7 +13,6 @@ The real production payroll app is the separate Django app at https://github.com
 ```
 app/
 ├── api/
-│   ├── public-data/[...path]/route.ts   ← anonymous proxy to NCB (used by the form)
 │   └── upload-url/route.ts              ← presigns S3 PUT URLs
 ├── workers/
 │   ├── new/                             ← Add Worker (Client Component form)
@@ -100,7 +99,7 @@ mcp__nocodebackend__set_rls_policy(
 )
 ```
 
-Then build the auth UI (V0.2) so users have sessions. The `/api/public-data/` route stops working for `workers` once it's private — the new auth route at `/api/data/` takes over.
+V0.2 shipped the auth UI (login / forgot-password / reset-password). V0.3 (in progress) flips `workers` to `private` and routes all reads/writes through `ncbAuthFetch` (Bearer + session cookies) and Server Actions — the old anonymous `/api/public-data/` proxy has been removed.
 
 ### Secrets
 
