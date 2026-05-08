@@ -16,6 +16,8 @@
 // support it.
 
 import { NextRequest, NextResponse } from "next/server";
+import { headers } from "next/headers";
+import { getSessionUser } from "@/lib/ncb-utils";
 import {
   uploadToPerceptPixel,
   addAnnotationsToMedia,
@@ -40,6 +42,14 @@ const WORKERS_TAG: { name: string; confidence: number } = {
 const WORKERS_FOLDER = "Workers";
 
 export async function POST(req: NextRequest) {
+  // V0.3 — gate on session. Anonymous callers get 401 so the public URL
+  // can't burn PerceptPixel quota.
+  const cookieHeader = (await headers()).get("cookie") ?? "";
+  const user = await getSessionUser(cookieHeader);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let formData: FormData;
   try {
     formData = await req.formData();
