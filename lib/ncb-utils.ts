@@ -57,7 +57,7 @@ export function extractAuthCookies(cookieHeader: string): string {
 // data proxy (not by the public route, which is anonymous).
 export async function getSessionUser(
   cookieHeader: string
-): Promise<{ id: string } | null> {
+): Promise<{ id: string; email?: string; name?: string } | null> {
   const authCookies = extractAuthCookies(cookieHeader);
   if (!authCookies) return null;
 
