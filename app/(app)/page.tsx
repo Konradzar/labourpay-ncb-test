@@ -10,7 +10,7 @@
 // for browser code (Task 9's form).
 
 import Link from "next/link";
-import { CONFIG } from "@/lib/ncb-utils";
+import { ncbAuthFetch } from "@/lib/ncb-utils";
 import { perceptpixelThumbnailUrl } from "@/lib/perceptpixel-url";
 import type { Worker, NCBListResponse } from "@/lib/types";
 
@@ -19,15 +19,11 @@ import type { Worker, NCBListResponse } from "@/lib/types";
 const THUMB_PX = 40;
 
 async function fetchWorkers(): Promise<Worker[]> {
-  // CONFIG is validated at module load in lib/ncb-utils.ts — if any required
-  // env var is missing, that import would already have thrown at startup.
-  //
-  // `limit=200` because NCB's list endpoint defaults to `limit=10` when no
-  // limit is given — the 11th-onward workers get silently dropped. 200 is a
-  // generous cap for V0 scale (you, in dev, with tens of workers); when the
-  // list ever grows toward 200 we'll want real pagination + search anyway.
-  const url = `${CONFIG.dataApiUrl}/read/workers?Instance=${CONFIG.instance}&limit=200`;
-  const res = await fetch(url, { cache: "no-store" });
+  // V0.3 — authenticated server-side fetch. ncbAuthFetch forwards Bearer +
+  // session cookies, so this works after workers RLS flips to `private`.
+  // Why &limit=200: NCB defaults to limit=10 and silently drops the rest.
+  // Real pagination is V1.0.
+  const res = await ncbAuthFetch(`/read/workers?limit=200`);
   if (!res.ok) {
     throw new Error(
       `NCB list workers failed: ${res.status} ${await res.text()}`
