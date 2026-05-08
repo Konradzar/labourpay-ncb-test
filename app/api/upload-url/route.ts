@@ -5,9 +5,19 @@
 // AWS keys never leave the server — they're used only inside lib/s3-utils.ts.
 
 import { NextRequest, NextResponse } from "next/server";
+import { headers } from "next/headers";
 import { makeUploadUrl, isAllowedContentType } from "@/lib/s3-utils";
+import { getSessionUser } from "@/lib/ncb-utils";
 
 export async function POST(req: NextRequest) {
+  // V0.3 — gate on session. Anonymous callers get 401 so the public URL
+  // can't be used as a free S3-key minter.
+  const cookieHeader = (await headers()).get("cookie") ?? "";
+  const user = await getSessionUser(cookieHeader);
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let body: { contentType?: string };
   try {
     body = await req.json();
