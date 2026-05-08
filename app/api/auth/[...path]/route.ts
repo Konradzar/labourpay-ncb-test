@@ -16,19 +16,27 @@
 import { NextRequest, NextResponse } from "next/server";
 import { CONFIG, extractAuthCookies } from "@/lib/ncb-utils";
 
+const NCB_SECRET_KEY = process.env.NCB_SECRET_KEY;
+if (!NCB_SECRET_KEY) {
+  throw new Error("NCB_SECRET_KEY missing — required for auth proxy. Check .env.local.");
+}
+
 async function proxy(req: NextRequest, params: { path: string[] }) {
   const pathSuffix = "/" + params.path.join("/");
   const url = `${CONFIG.authApiUrl}${pathSuffix}?Instance=${CONFIG.instance}`;
 
   const cookieHeader = req.headers.get("cookie") ?? "";
   const sessionCookies = extractAuthCookies(cookieHeader);
+  const origin = req.headers.get("origin");
 
   const init: RequestInit = {
     method: req.method,
     headers: {
       "Content-Type": req.headers.get("content-type") ?? "application/json",
       "X-Database-Instance": CONFIG.instance,
+      "Authorization": `Bearer ${NCB_SECRET_KEY}`,
       ...(sessionCookies && { Cookie: sessionCookies }),
+      ...(origin && { Origin: origin }),
     },
   };
 
