@@ -11,8 +11,8 @@
 // through our server for the S3 case.
 
 import { useState, useRef, FormEvent } from "react";
-import { useRouter } from "next/navigation";
 import type { MutableRefObject } from "react";
+import { createWorker } from "./actions";
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -97,7 +97,6 @@ async function uploadFileToPerceptPixel(file: File): Promise<string> {
 }
 
 export default function AddWorkerForm() {
-  const router = useRouter();
   const [photo, setPhoto] = useState<UploadState>(INITIAL_UPLOAD);
   const [idDoc, setIdDoc] = useState<UploadState>(INITIAL_UPLOAD);
   // V0.1.5 — third image source. Optional. If user doesn't pick a file,
@@ -162,42 +161,32 @@ export default function AddWorkerForm() {
     }
 
     const formData = new FormData(e.currentTarget);
-    const payload = {
-      name: String(formData.get("name") || "").trim(),
-      monthly_salary: Number(formData.get("monthly_salary")),
-      photo_key: photo.key,
-      id_doc_key: idDoc.key,
-      // V0.1.5: optional. null is fine — column is nullable.
-      perceptpixel_url: perceptpixel.key ?? null,
-    };
+    const name = String(formData.get("name") || "").trim();
+    const monthly_salary = Number(formData.get("monthly_salary"));
 
-    if (!payload.name) {
+    if (!name) {
       setError("Name is required.");
       return;
     }
-    if (!Number.isFinite(payload.monthly_salary) || payload.monthly_salary < 0) {
+    if (!Number.isFinite(monthly_salary) || monthly_salary < 0) {
       setError("Monthly salary must be a non-negative number.");
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch("/api/public-data/create/workers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      await createWorker({
+        name,
+        monthly_salary,
+        photo_key: photo.key,
+        id_doc_key: idDoc.key,
+        perceptpixel_url: perceptpixel.key ?? null,
       });
-      if (!res.ok) {
-        throw new Error(`Save failed: ${res.status} ${await res.text()}`);
-      }
-      // Success — refresh server-component data first so the destination's
-      // RSC fetch runs against fresh cache, THEN navigate. Reverse order
-      // (push then refresh) can briefly show the stale list before updating.
-      router.refresh();
-      router.push("/");
+      // No fall-through here on success — the Server Action redirects.
     } catch (err) {
+      // Next.js framework throws NEXT_REDIRECT internally; it's caught and
+      // handled before reaching this catch. Anything we see is a real error.
       setError(err instanceof Error ? err.message : "Save failed");
-    } finally {
       setSubmitting(false);
     }
   };
