@@ -13,10 +13,17 @@ export async function GET() {
   // uses ?Instance=. Capital Instance returns "Missing instance parameter"
   // here. Verified against NCB direct: 2026-05-08.
   const url = `${CONFIG.authApiUrl}/providers?instance=${CONFIG.instance}`;
-  const res = await fetch(url, {
-    headers: { "X-Database-Instance": CONFIG.instance },
-    cache: "no-store",
-  });
-  const data = await res.json();
-  return NextResponse.json(data);
+  try {
+    const res = await fetch(url, {
+      headers: { "X-Database-Instance": CONFIG.instance },
+      cache: "no-store",
+    });
+    const data = await res.json().catch(() => ({}));
+    return NextResponse.json(data, { status: res.status });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "Could not reach auth providers endpoint." },
+      { status: 502 }
+    );
+  }
 }
