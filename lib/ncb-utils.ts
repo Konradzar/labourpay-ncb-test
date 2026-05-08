@@ -8,6 +8,7 @@
 // of these with NEXT_PUBLIC_ — that would expose them to the browser bundle.
 
 import { NextRequest, NextResponse } from "next/server";
+import { headers } from "next/headers";
 
 // === Configuration loaded from env vars ===
 // Server-only. Read from process.env at module load.
@@ -253,6 +254,13 @@ export async function ncbAuthFetch(
     );
   }
 
+  // Forward the user's session cookies (if present) so NCB knows which user
+  // is making the request. Required for PUT/DELETE which NCB only allows
+  // when an authenticated session is present. Backward-compatible: when no
+  // session cookies exist, the call is Bearer-only just like V0.
+  const cookieHeader = (await headers()).get("cookie") ?? "";
+  const sessionCookies = extractAuthCookies(cookieHeader);
+
   const url = `${CONFIG.dataApiUrl}${pathSuffix}${
     pathSuffix.includes("?") ? "&" : "?"
   }Instance=${CONFIG.instance}`;
@@ -264,6 +272,7 @@ export async function ncbAuthFetch(
       Authorization: `Bearer ${secret}`,
       "Content-Type": "application/json",
       "X-Database-Instance": CONFIG.instance,
+      ...(sessionCookies && { Cookie: sessionCookies }),
       ...(init.headers ?? {}),
     },
   });
