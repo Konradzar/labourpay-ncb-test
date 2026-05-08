@@ -8,7 +8,11 @@ import { NextResponse } from "next/server";
 import { CONFIG } from "@/lib/ncb-utils";
 
 export async function GET() {
-  const url = `${CONFIG.authApiUrl}/providers?Instance=${CONFIG.instance}`;
+  // NCB quirk: /providers is the only auth endpoint that expects ?instance=
+  // (lowercase). Every other NCB endpoint (/get-session, /sign-in, /read/*)
+  // uses ?Instance=. Capital Instance returns "Missing instance parameter"
+  // here. Verified against NCB direct: 2026-05-08.
+  const url = `${CONFIG.authApiUrl}/providers?instance=${CONFIG.instance}`;
   const res = await fetch(url, {
     headers: { "X-Database-Instance": CONFIG.instance },
     cache: "no-store",
