@@ -184,8 +184,18 @@ export default function AddWorkerForm() {
       });
       // No fall-through here on success — the Server Action redirects.
     } catch (err) {
-      // Next.js framework throws NEXT_REDIRECT internally; it's caught and
-      // handled before reaching this catch. Anything we see is a real error.
+      // NEXT_REDIRECT must propagate so the framework can navigate. Catching
+      // it here causes the digest text to briefly flash in the error banner.
+      // We can't import a public helper for this — duck-type the digest shape.
+      if (
+        err &&
+        typeof err === "object" &&
+        "digest" in err &&
+        typeof (err as { digest: unknown }).digest === "string" &&
+        ((err as { digest: string }).digest).startsWith("NEXT_REDIRECT")
+      ) {
+        throw err;
+      }
       setError(err instanceof Error ? err.message : "Save failed");
       setSubmitting(false);
     }
