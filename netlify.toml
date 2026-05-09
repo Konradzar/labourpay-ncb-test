@@ -16,5 +16,18 @@
   command = "npm run build"
   publish = ".next"
 
+[build.environment]
+  # Netlify's secrets scanner reads each env var marked as "secret" in the
+  # site config and blocks the deploy if the literal value appears anywhere
+  # in the repo or build output. The 6 keys below are non-secret identifiers
+  # — they're URLs, an AWS region, a bucket name, and an NCB instance id —
+  # that legitimately appear in .env.local.example, README, docs/plans/*, and
+  # (for the region) inside the AWS SDK's own bundled code. Excluding them
+  # here lets the scan continue to enforce on the actual secrets:
+  # NCB_SECRET_KEY, APP_AWS_ACCESS_KEY_ID, APP_AWS_SECRET_ACCESS_KEY,
+  # PERCEPTPIXEL_API_KEY. Those should never appear in committed files; if
+  # the scanner ever flags one, that's a real bug to fix, not to opt out.
+  SECRETS_SCAN_OMIT_KEYS = "S3_BUCKET_NAME,APP_AWS_REGION,NCB_APP_URL,NCB_DATA_API_URL,NCB_INSTANCE,NCB_AUTH_API_URL"
+
 [[plugins]]
   package = "@netlify/plugin-nextjs"
