@@ -155,20 +155,21 @@ export default function AddWorkerForm() {
       setError("Wait for all files to finish uploading before saving.");
       return;
     }
-    if (!photo.key || !idDoc.key) {
-      setError("Both a photo and an ID document are required.");
-      return;
-    }
 
     const formData = new FormData(e.currentTarget);
     const name = String(formData.get("name") || "").trim();
-    const monthly_salary = Number(formData.get("monthly_salary"));
+    const rawSalary = String(formData.get("monthly_salary") || "").trim();
+    const monthly_salary: number | null =
+      rawSalary === "" ? null : Number(rawSalary);
 
     if (!name) {
       setError("Name is required.");
       return;
     }
-    if (!Number.isFinite(monthly_salary) || monthly_salary < 0) {
+    if (
+      monthly_salary !== null &&
+      (!Number.isFinite(monthly_salary) || monthly_salary < 0)
+    ) {
       setError("Monthly salary must be a non-negative number.");
       return;
     }
@@ -178,8 +179,8 @@ export default function AddWorkerForm() {
       await createWorker({
         name,
         monthly_salary,
-        photo_key: photo.key,
-        id_doc_key: idDoc.key,
+        photo_key: photo.key, // already null when not uploaded
+        id_doc_key: idDoc.key, // already null when not uploaded
         perceptpixel_url: perceptpixel.key ?? null,
       });
       // No fall-through here on success — the Server Action redirects.
@@ -213,11 +214,10 @@ export default function AddWorkerForm() {
       </div>
 
       <div>
-        <label htmlFor="monthly_salary" style={labelStyle}>Monthly salary (R, whole rands)</label>
+        <label htmlFor="monthly_salary" style={labelStyle}>Monthly salary (R, whole rands) — optional</label>
         <input
           id="monthly_salary"
           name="monthly_salary"
-          required
           type="number"
           min="0"
           step="1"
@@ -226,7 +226,7 @@ export default function AddWorkerForm() {
       </div>
 
       <div>
-        <label style={labelStyle}>Photo (JPEG / PNG / PDF, max 5 MB)</label>
+        <label style={labelStyle}>Photo (JPEG / PNG / PDF, max 5 MB) — optional</label>
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"
@@ -237,7 +237,7 @@ export default function AddWorkerForm() {
       </div>
 
       <div>
-        <label style={labelStyle}>ID Document (JPEG / PNG / PDF, max 5 MB)</label>
+        <label style={labelStyle}>ID Document (JPEG / PNG / PDF, max 5 MB) — optional</label>
         <input
           type="file"
           accept="image/jpeg,image/png,application/pdf"

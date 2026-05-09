@@ -15,9 +15,9 @@ import { ncbAuthFetch } from "@/lib/ncb-utils";
 
 export type CreateWorkerInput = {
   name: string;
-  monthly_salary: number;
-  photo_key: string;
-  id_doc_key: string;
+  monthly_salary: number | null;
+  photo_key: string | null;
+  id_doc_key: string | null;
   perceptpixel_url: string | null;
 };
 
@@ -26,11 +26,11 @@ export async function createWorker(input: CreateWorkerInput): Promise<void> {
   if (!input.name || input.name.trim().length === 0) {
     throw new Error("Name is required.");
   }
-  if (!Number.isFinite(input.monthly_salary) || input.monthly_salary < 0) {
+  if (
+    input.monthly_salary !== null &&
+    (!Number.isFinite(input.monthly_salary) || input.monthly_salary < 0)
+  ) {
     throw new Error("Monthly salary must be a non-negative number.");
-  }
-  if (!input.photo_key || !input.id_doc_key) {
-    throw new Error("Both a photo and an ID document are required.");
   }
 
   const payload = {

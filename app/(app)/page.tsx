@@ -31,7 +31,8 @@ async function fetchWorkers(): Promise<Worker[]> {
 // Format an integer rand amount as "R 1 234" (South African style — space
 // thousand-separator, no decimal). NCB stored monthly_salary as INT despite
 // our DECIMAL request, so values are always whole rands. See docs/NCB_NOTES.md.
-function formatRand(value: string | number): string {
+function formatRand(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return "R —";
   const n = Number(value);
   if (!Number.isFinite(n)) return "R —";
   return `R ${Math.round(n).toLocaleString("en-ZA")}`;

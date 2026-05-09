@@ -38,7 +38,8 @@ async function fetchWorker(id: string): Promise<Worker | null> {
   return data as Worker;
 }
 
-function formatRand(value: string | number): string {
+function formatRand(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return "R —";
   const n = Number(value);
   if (!Number.isFinite(n)) return "R —";
   return `R ${Math.round(n).toLocaleString("en-ZA")}`;

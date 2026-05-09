@@ -15,7 +15,9 @@
 export type Worker = {
   id: number;
   name: string;
-  monthly_salary: string;
+  // monthly_salary: NCB returns numeric columns as JSON STRINGS, not numbers.
+  // V0.3 made the column nullable — null means "salary not specified."
+  monthly_salary: string | null;
   photo_key: string | null;
   id_doc_key: string | null;
   // V0.1.5 — third image source for PerceptPixel α-mode test. Stores the full
