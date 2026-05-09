@@ -122,3 +122,110 @@ To apply V0.2 RLS state on a fresh database, use NCB MCP:
 ```
 mcp__nocodebackend__set_rls_policy(database, table="workers", policy="public_readwrite,shared_readwrite")
 ```
+
+---
+
+## V0.3 — Deploy + RLS flip + call-path migration (added 2026-05-09)
+
+V0.3 takes the localhost-only V0.2 app and ships it to a public URL via Greta's GitHub-sync to Netlify, with proper authentication enforcement at every layer.
+
+**State changes vs V0.2:**
+
+- All NCB calls move server-side (Server Components / Server Actions / `ncbAuthFetch`); browser never carries an NCB credential
+- `/api/public-data/[...path]/route.ts` and its dependent helpers in `lib/ncb-utils.ts` are deleted
+- `/api/upload-url` and `/api/perceptpixel-upload` gain session-check guards (401 to anonymous callers)
+- Workers RLS flipped from `public_readwrite,shared_readwrite` → `private`
+- Existing 9 worker rows backfilled with `user_id` set to bootstrap user UUID
+- Mid-flight: all worker fields except `name` made optional (form, server action, and DB schema all updated)
+
+### Scenario 23 — Backfill verification (DB ground truth)
+
+Via NCB MCP:
+```
+SELECT id, name, user_id FROM workers ORDER BY id
+```
+
+**Expect:** every row's `user_id` equals the bootstrap user UUID (no NULLs). After mid-flight optional-fields change, new rows created via the form auto-stamp `user_id` from session — same expectation.
+
+### Scenario 24 — Local list works after RLS flip to `private`
+
+While signed in: visit `http://localhost:3000/`.
+**Expect:** list shows all workers owned by the signed-in user (initially 9, growing as you create). RLS now filters by `user_id = session.user.id` server-side at NCB.
+
+### Scenario 25 — Server Action create persists with correct user_id
+
+`/workers/new` → fill name (and optionally salary, photo, ID doc, PerceptPixel) → submit. After redirect, NCB MCP:
+```
+SELECT id, name, user_id FROM workers ORDER BY id DESC LIMIT 1
+```
+**Expect:** new row's `user_id` matches the signed-in user. Note: the form's submit handler does NOT include `user_id` in the payload — NCB sets it from the session because workers RLS is `private`.
+
+### Scenario 26 — Anonymous /api/upload-url returns 401
+
+```bash
+curl -i -X POST http://localhost:3000/api/upload-url \
+  -H "Content-Type: application/json" \
+  -d '{"contentType":"image/jpeg"}'
+```
+**Expect:** `HTTP/1.1 401 Unauthorized` with body `{"error":"Unauthorized"}`. Same shape for `/api/perceptpixel-upload` with no session.
+
+### Scenario 27 — Create with only a name (post-mid-flight)
+
+`/workers/new` → fill ONLY the Name field → submit.
+**Expect:** redirect to `/`, new row visible with the name and "R —" in the salary column. Detail page renders "No photo uploaded.", "No ID document uploaded.", "No PerceptPixel image."
+
+**Verify via SQL:**
+```
+SELECT id, name, monthly_salary, photo_key, id_doc_key, perceptpixel_url FROM workers ORDER BY id DESC LIMIT 1
+```
+**Expect:** `monthly_salary`, `photo_key`, `id_doc_key`, `perceptpixel_url` all SQL NULL (not empty strings).
+
+### Scenario 28 — Production: deploy + first sign-in (Greta-Netlify URL)
+
+Visit production URL.
+**Expect:** redirect to `/login`. After sign-in, list renders, shows all workers owned by you.
+
+If sign-in fails with NCB Better Auth CSRF / Origin mismatch: NCB allowed-origins for the instance does not include the production hostname. Add it via NCB dashboard.
+
+### Scenario 29 — Production: end-to-end create with all fields
+
+Production URL → `/workers/new` → fill name + salary, attach photo + ID doc + PerceptPixel image → submit.
+**Expect:** redirect to `/`; new row in DB; photo retrievable from S3 via signed URL; PerceptPixel thumbnail renders inline on list and detail pages.
+
+If photo upload fails with CORS error in DevTools: AWS S3 bucket CORS does not include the production hostname in `AllowedOrigins`. Add it.
+
+If PerceptPixel upload fails: server-side proxy is consuming the API key — check Netlify env vars include `PERCEPTPIXEL_API_KEY`.
+
+---
+
+## V0.3 schema adjustment (modifies design doc)
+
+V0.3's design intended to keep the workers schema as-is. **Mid-flight, `monthly_salary` was flipped from `INT NOT NULL` → `INT NULL`** to support "make all fields except name optional" UX. Existing 9 rows kept their values; row 13 (first post-change create) confirmed proper SQL NULL persistence.
+
+To replicate the schema state on a fresh database:
+
+```
+ALTER TABLE workers MODIFY COLUMN monthly_salary INT NULL
+```
+
+(NCB MCP `execute_sql`.)
+
+---
+
+## V0.3 RLS state
+
+```
+table_name | policy
+-----------+-------
+workers    | (absent — NCB models "private" as no row in ncba_rls_config)
+```
+
+- Anonymous: NCB rejects authenticated-route reads → list page never reaches it (the `(app)/layout.tsx` session guard redirects to `/login` first)
+- Authenticated: NCB filters `WHERE user_id = session.user.id`; reads, creates, updates, deletes all scoped to the signed-in user
+
+To apply V0.3 RLS state:
+
+```
+mcp__nocodebackend__set_rls_policy(database, table="workers", policy="private")
+```
+
