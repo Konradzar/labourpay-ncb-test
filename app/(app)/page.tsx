@@ -9,9 +9,10 @@ import { ncbAuthFetch } from "@/lib/ncb-utils";
 import { perceptpixelThumbnailUrl } from "@/lib/perceptpixel-url";
 import type { Worker, NCBListResponse } from "@/lib/types";
 
-// V0.1.5 — thumbnail size in pixels for the list-row preview. Square. 40px
-// reads well in a table row without overwhelming the name column.
-const THUMB_PX = 40;
+// V0.1.5 — thumbnail size in pixels for the list-row preview. Square.
+// V0.3 bumped from 40 → 60 (50% larger) so faces are easier to recognise
+// at a glance without dominating the name column.
+const THUMB_PX = 60;
 
 async function fetchWorkers(): Promise<Worker[]> {
   // V0.3 — authenticated server-side fetch. ncbAuthFetch forwards Bearer +
