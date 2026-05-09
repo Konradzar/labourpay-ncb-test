@@ -5,6 +5,14 @@
 // `?token=<X>&db=<Y>` query params. They enter a new password; we POST to
 // NCB's /reset-password with token + newPassword. On success → /login.
 
+// Opt out of static prerender at build time. useSearchParams() requires
+// either a Suspense boundary OR an explicit dynamic-render opt-out for
+// `next build` to succeed (Next.js 15+ enforces this on the prerender
+// path). For a token-bound reset flow there's nothing static to cache —
+// every visit is unique by the token in the URL — so force-dynamic is the
+// right answer rather than splitting the component to introduce Suspense.
+export const dynamic = "force-dynamic";
+
 import { useEffect, useState, FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
