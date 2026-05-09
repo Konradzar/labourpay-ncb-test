@@ -9,10 +9,21 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 
-const S3_REGION = process.env.AWS_REGION!;
+// V0.3 — env var names use the APP_AWS_ prefix instead of the standard
+// AWS_ prefix because Netlify *reserves* AWS_REGION/AWS_ACCESS_KEY_ID/
+// AWS_SECRET_ACCESS_KEY for its own Lambda runtime integration and refuses
+// to let you set them at the project level. Keeping the prefix consistent
+// across local dev and prod avoids a Netlify-only branch in the code.
+//
+// Side benefit: the AWS SDK's default credential chain WILL NOT pick these
+// up automatically (it looks for AWS_*), so we have to pass them explicitly
+// to the S3Client constructor below — which is good, because it makes it
+// clear these are app-specific S3 credentials, not whatever ambient AWS
+// identity might be available in the runtime environment.
+const S3_REGION = process.env.APP_AWS_REGION!;
 const S3_BUCKET = process.env.S3_BUCKET_NAME!;
-const S3_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID!;
-const S3_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY!;
+const S3_ACCESS_KEY = process.env.APP_AWS_ACCESS_KEY_ID!;
+const S3_SECRET_KEY = process.env.APP_AWS_SECRET_ACCESS_KEY!;
 
 // Fail loudly at module load if any S3 env var is missing. Without this, the
 // first S3 SDK call would throw a confusing "credential object is not valid"
@@ -20,8 +31,8 @@ const S3_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY!;
 // pointing at .env.local.
 if (!S3_REGION || !S3_BUCKET || !S3_ACCESS_KEY || !S3_SECRET_KEY) {
   throw new Error(
-    "Missing S3 env vars. Required: AWS_REGION, S3_BUCKET_NAME, " +
-      "AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY. " +
+    "Missing S3 env vars. Required: APP_AWS_REGION, S3_BUCKET_NAME, " +
+      "APP_AWS_ACCESS_KEY_ID, APP_AWS_SECRET_ACCESS_KEY. " +
       "Check .env.local against .env.local.example."
   );
 }
