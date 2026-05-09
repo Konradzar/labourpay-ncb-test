@@ -16,6 +16,7 @@
 5. **The `cdn_url` returned by upload doesn't auto-update after a move.** You have to reconstruct it server-side.
 6. **uid-based endpoints have an indexing race** — a 404 immediately after upload doesn't mean the uid is wrong, it means PerceptPixel hasn't indexed it yet. Retry with backoff.
 7. **The Api-Key cannot be exposed to the browser.** All uploads must go via a server-side proxy. There is no presigned-URL or browser-direct equivalent (unlike S3).
+8. **`DELETE /v1/media/<uid>` on a foldered file silently 404s.** The working form is `DELETE /v1/media/<uid>?folder_name=<folder>` → 204 No Content. The path-only form documented in PerceptPixel's public docs only works for root-level files. Discovered V0.3 mid-flight (May 2026) — see "Delete" section below.
 
 ---
 
@@ -244,6 +245,74 @@ Move can also return 404 immediately after upload. Same retry-on-404 with backof
 
 ---
 
+## Delete (`DELETE /v1/media/<uid>`)
+
+### The folder gotcha applies on the way out, too
+
+PerceptPixel's docs show a clean path-only DELETE returning `204 No Content`:
+```
+DELETE https://api.perceptpixel.com/v1/media/<uid>
+```
+That works for **root-level** files. For files inside a folder (the only kind we have, since the V0.1.5 upload sequence ends with a move-to-folder), the same call returns:
+```
+HTTP 404
+{"detail":"No Media matches the given query."}
+```
+
+The working form scopes the lookup to the folder via a **query parameter**:
+```
+DELETE https://api.perceptpixel.com/v1/media/<uid>?folder_name=Workers
+→ 204 No Content
+```
+
+### Symptom of getting this wrong
+
+The bug is invisible from the response alone: a naive client treats `404` as "already gone" and reports success. Meanwhile the file persists in the dashboard's folder view and the cdn_url keeps serving the image. We shipped this bug in V0.3 commit `79ac1f0`; it took two more commits (`dc7302d` for a wrong fix, `f3bdf11` for the right one) to nail.
+
+### Implementation
+
+```typescript
+const DELETE_URL = (uid: string) =>
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}` +
+  `?folder_name=${encodeURIComponent("Workers")}`;
+
+const res = await fetch(DELETE_URL(uid), {
+  method: "DELETE",
+  headers: { Authorization: `Api-Key ${API_KEY}` },
+});
+
+// Treat 200, 204, 404 as success.
+// 200/204: actually deleted.
+// 404 with the correct folder_name: file is genuinely gone (concurrent delete or
+// previously cleaned up). Without folder_name, 404 is a false positive — see above.
+if (!res.ok && res.status !== 404) {
+  throw new Error(`PerceptPixel DELETE ${uid} failed: ${res.status}`);
+}
+```
+
+### Other shapes that DON'T work (tested empirically against our `evzmohsl` org, V0.3)
+
+| Attempt | Result |
+|---|---|
+| `DELETE /v1/media/<uid>` (no folder_name) | 404; file stays in folder |
+| `GET /v1/media/<uid>` (no folder_name) on foldered file | 404 (you can't even read its metadata) |
+| `PUT /v1/media/<uid>/move` with `folder_name=""` | 400 "Please specify destination folder name" |
+| `PUT /v1/media/<uid>/move` with `folder_name="/"` | 400 |
+| `PUT /v1/media/<uid>/move` with `folder_name="_root"` | 400 (no implicit root concept) |
+| `POST /v1/media/<uid>/annotations` on foldered file (no folder_name) | 404 |
+
+The annotations endpoint with `?folder_name=` was not exhaustively tested but is plausibly the same shape — if you need to update tags on a foldered file, try the query-param form first.
+
+### CDN cache zombie note
+
+If you DELETE a file using the wrong shape (no `folder_name`), PerceptPixel sometimes purges the API-visible metadata anyway. The dashboard's image-details page eventually disappears, but the `https://img.perceptpixel.com/<org>/<folder>/<filename>` URL keeps serving from CDN cache for some unknown TTL. We hit this on uid `LjllKqzpvT` during V0.3 testing: API said "not found" both before and after the fix, dashboard showed it gone, but the cdn_url still returned 200 with the image. Don't rely on cdn_url 200/404 as proof of deletion — check the API endpoint with `?folder_name=` or the dashboard UI.
+
+### Discovery credit
+
+The query-param shape isn't in PerceptPixel's public docs. Konrad found it by experimenting in NativeRest while we were debugging the V0.3 deleteWorker flow. PerceptPixel's path-only docs almost certainly miss it because the docs were written before folders existed; the `?folder_name=` parameter is a backward-compatible extension hidden behind their API but not surfaced in the docs page.
+
+---
+
 ## URL transformations — `https://img.perceptpixel.com/<org>/<TRANSFORM>/<rest>`
 
 ### Syntax
@@ -378,4 +447,4 @@ When something's not working, run these in order:
 
 ---
 
-*Last updated: V0.1.5, May 2026. Cross-reference: `lib/perceptpixel-utils.ts` (server helpers), `lib/perceptpixel-url.ts` (pure URL helpers), `app/api/perceptpixel-upload/route.ts` (route orchestration), `docs/NCB_NOTES.md` (the partner doc for NoCodeBackend).*
+*Last updated: V0.3 mid-flight, May 2026 — added the Delete section after discovering the `?folder_name=` quirk. Cross-reference: `lib/perceptpixel-utils.ts` (server helpers including `deletePerceptPixelMedia`), `lib/perceptpixel-url.ts` (pure URL helpers), `app/api/perceptpixel-upload/route.ts` (route orchestration), `app/(app)/workers/[id]/actions.ts` (`deleteWorker` calls into the delete helper), `docs/NCB_NOTES.md` (the partner doc for NoCodeBackend).*
