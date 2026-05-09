@@ -1,0 +1,20 @@
+# Netlify build config — added V0.3 to make Greta-driven deploys work.
+#
+# Greta runs `npm run build` directly without going through Netlify's
+# framework auto-detection, so the @netlify/plugin-nextjs plugin doesn't
+# get auto-installed. Without that plugin, Netlify treats the build output
+# as a static publish and serves Netlify's default 404 for every route
+# because the Next.js App Router's Server Components and route handlers
+# need to run as serverless / Edge Functions.
+#
+# Declaring the plugin here forces Netlify to install + run it on every
+# deploy, regardless of how the build was triggered. The plugin handles
+# the translation from `.next/server/` and `.next/static/` into the right
+# Edge Function layout.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
