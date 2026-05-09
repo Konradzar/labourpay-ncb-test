@@ -232,8 +232,21 @@ export async function moveMediaToFolder(
 // when its owning worker row is removed from NCB. Best-effort: callers
 // catch and log on failure rather than blocking the local delete.
 //
-// 200 and 404 are both treated as success — 404 means the file is already
-// gone, which is the desired post-condition. Anything else throws.
+// FOLDER GOTCHA (discovered V0.3 mid-flight, mirror of the upload-side
+// folder gotcha documented in PERCEPTPIXEL_NOTES.md): PerceptPixel's
+// DELETE endpoint returns 200 on foldered files but only removes the
+// metadata link — the underlying file stays in the dashboard's folder
+// view. The fix is symmetric with the upload sequence: move-to-root
+// FIRST so the file is back in the standard uid namespace, THEN DELETE.
+//
+// Why move-to-root before delete:
+//   upload  : root → tag → move-to-folder      (uid addressable in root for tag)
+//   delete  : move-to-root → DELETE            (uid addressable in root for delete)
+//
+// The move call is best-effort. If it fails (network blip, rate limit),
+// we still attempt DELETE — worst case the file stays as an orphan and
+// the logs surface the cause. 200 and 404 on DELETE are both success;
+// anything else throws so the caller can decide.
 
 const DELETE_URL = (uid: string) =>
   `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}`;
@@ -243,6 +256,30 @@ export async function deletePerceptPixelMedia(uid: string): Promise<void> {
   if (!apiKey) {
     throw new Error("PERCEPTPIXEL_API_KEY missing");
   }
+
+  // Step 1: move-to-root (best-effort). folder_name="" is the empirically
+  // observed convention; if PerceptPixel rejects it the DELETE attempt below
+  // still runs.
+  try {
+    const moveRes = await fetch(MOVE_URL(uid), {
+      method: "PUT",
+      headers: { Authorization: `Api-Key ${apiKey}` },
+      body: new URLSearchParams({ folder_name: "" }),
+    });
+    if (!moveRes.ok) {
+      const body = await moveRes.text();
+      console.warn(
+        `[deletePerceptPixelMedia ${uid}] move-to-root non-ok ${moveRes.status}: ${body.slice(0, 200)} (continuing to DELETE anyway)`
+      );
+    }
+  } catch (err) {
+    console.warn(
+      `[deletePerceptPixelMedia ${uid}] move-to-root threw (continuing to DELETE anyway):`,
+      err
+    );
+  }
+
+  // Step 2: DELETE.
   const res = await fetch(DELETE_URL(uid), {
     method: "DELETE",
     headers: { Authorization: `Api-Key ${apiKey}` },
