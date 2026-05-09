@@ -223,3 +223,33 @@ export async function moveMediaToFolder(
 
   throw lastError ?? new Error("PerceptPixel move failed: unknown");
 }
+
+// === Delete ===
+//
+// API: DELETE https://api.perceptpixel.com/v1/media/<uid>
+//
+// Used by deleteWorker (V0.3 mid-flight) to clean up the PerceptPixel file
+// when its owning worker row is removed from NCB. Best-effort: callers
+// catch and log on failure rather than blocking the local delete.
+//
+// 200 and 404 are both treated as success — 404 means the file is already
+// gone, which is the desired post-condition. Anything else throws.
+
+const DELETE_URL = (uid: string) =>
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}`;
+
+export async function deletePerceptPixelMedia(uid: string): Promise<void> {
+  const apiKey = process.env.PERCEPTPIXEL_API_KEY;
+  if (!apiKey) {
+    throw new Error("PERCEPTPIXEL_API_KEY missing");
+  }
+  const res = await fetch(DELETE_URL(uid), {
+    method: "DELETE",
+    headers: { Authorization: `Api-Key ${apiKey}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(
+      `PerceptPixel DELETE /v1/media/${uid} failed: ${res.status} ${await res.text()}`
+    );
+  }
+}

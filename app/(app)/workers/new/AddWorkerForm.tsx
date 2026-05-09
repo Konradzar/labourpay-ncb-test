@@ -23,11 +23,14 @@ type UploadState = {
   // `https://img.perceptpixel.com/<org-uid>/<filename>`. The handler is
   // generic over which.
   key: string | null;
+  // V0.3 — only set by the PerceptPixel uploader; S3 uploaders leave this
+  // null. Used by handleSubmit to pass the uid through to createWorker.
+  uid: string | null;
   uploading: boolean;
   error: string | null;
 };
 
-const INITIAL_UPLOAD: UploadState = { key: null, uploading: false, error: null };
+const INITIAL_UPLOAD: UploadState = { key: null, uid: null, uploading: false, error: null };
 
 // Shared client-side validation. Throws with a user-readable message if the
 // file is the wrong type or too large. Both uploaders use this — no point
@@ -45,10 +48,9 @@ function validateFile(file: File): void {
 
 // Upload a single file to S3: POST /api/upload-url, then PUT to S3.
 // Returns the S3 key on success; throws on failure.
-async function uploadFileToS3(file: File): Promise<string> {
+async function uploadFileToS3(file: File): Promise<{ key: string }> {
   validateFile(file);
 
-  // Step 1: ask our server for a presigned URL.
   const presignRes = await fetch("/api/upload-url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -59,8 +61,6 @@ async function uploadFileToS3(file: File): Promise<string> {
   }
   const { url, key } = (await presignRes.json()) as { url: string; key: string };
 
-  // Step 2: PUT the file directly to S3 using the presigned URL.
-  // Browser → S3 directly. Our server is bypassed for the file bytes.
   const putRes = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": file.type },
@@ -70,13 +70,13 @@ async function uploadFileToS3(file: File): Promise<string> {
     throw new Error(`S3 upload failed: ${putRes.status} ${putRes.statusText}`);
   }
 
-  return key;
+  return { key };
 }
 
 // Upload a single file to PerceptPixel: POST multipart to our own server
 // proxy (which forwards to PerceptPixel with the Api-Key header). Returns
 // the cdn_url on success.
-async function uploadFileToPerceptPixel(file: File): Promise<string> {
+async function uploadFileToPerceptPixel(file: File): Promise<{ key: string; uid: string }> {
   validateFile(file);
 
   const fd = new FormData();
@@ -85,15 +85,14 @@ async function uploadFileToPerceptPixel(file: File): Promise<string> {
   const res = await fetch("/api/perceptpixel-upload", {
     method: "POST",
     body: fd,
-    // Don't set Content-Type — browser sets multipart/form-data; boundary=...
   });
   if (!res.ok) {
     throw new Error(
       `PerceptPixel upload failed: ${res.status} ${await res.text()}`
     );
   }
-  const { cdn_url } = (await res.json()) as { cdn_url: string };
-  return cdn_url;
+  const { cdn_url, uid } = (await res.json()) as { cdn_url: string; uid: string };
+  return { key: cdn_url, uid };
 }
 
 export default function AddWorkerForm() {
@@ -121,7 +120,7 @@ export default function AddWorkerForm() {
   const handleFileChange = (
     setState: (state: UploadState) => void,
     reqIdRef: MutableRefObject<number>,
-    uploader: (file: File) => Promise<string>
+    uploader: (file: File) => Promise<{ key: string; uid?: string }>
   ) => async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     // Reset the input value so picking the SAME file twice (e.g. retry after
@@ -131,16 +130,16 @@ export default function AddWorkerForm() {
     if (!file) return;
 
     const myReqId = ++reqIdRef.current;
-    setState({ key: null, uploading: true, error: null });
+    setState({ key: null, uid: null, uploading: true, error: null });
     try {
-      const key = await uploader(file);
-      // If the user picked another file in the meantime, our result is stale.
+      const result = await uploader(file);
       if (myReqId !== reqIdRef.current) return;
-      setState({ key, uploading: false, error: null });
+      setState({ key: result.key, uid: result.uid ?? null, uploading: false, error: null });
     } catch (err) {
       if (myReqId !== reqIdRef.current) return;
       setState({
         key: null,
+        uid: null,
         uploading: false,
         error: err instanceof Error ? err.message : "Upload failed",
       });
@@ -179,9 +178,10 @@ export default function AddWorkerForm() {
       await createWorker({
         name,
         monthly_salary,
-        photo_key: photo.key, // already null when not uploaded
-        id_doc_key: idDoc.key, // already null when not uploaded
+        photo_key: photo.key,
+        id_doc_key: idDoc.key,
         perceptpixel_url: perceptpixel.key ?? null,
+        perceptpixel_uid: perceptpixel.uid ?? null,
       });
       // No fall-through here on success — the Server Action redirects.
     } catch (err) {

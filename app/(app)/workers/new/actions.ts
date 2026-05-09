@@ -19,6 +19,7 @@ export type CreateWorkerInput = {
   photo_key: string | null;
   id_doc_key: string | null;
   perceptpixel_url: string | null;
+  perceptpixel_uid: string | null;
 };
 
 export async function createWorker(input: CreateWorkerInput): Promise<void> {
@@ -39,6 +40,7 @@ export async function createWorker(input: CreateWorkerInput): Promise<void> {
     photo_key: input.photo_key,
     id_doc_key: input.id_doc_key,
     perceptpixel_url: input.perceptpixel_url,
+    perceptpixel_uid: input.perceptpixel_uid,
     // user_id deliberately omitted — NCB sets it from the session on
     // authenticated writes when RLS is `private`.
   };

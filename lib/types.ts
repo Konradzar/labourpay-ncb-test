@@ -26,6 +26,11 @@ export type Worker = {
   // because existing rows pre-V0.1.5 don't have it. See
   // docs/plans/2026-05-07-v0.1.5-perceptpixel-design.md (when written).
   perceptpixel_url?: string | null;
+  // V0.3 — PerceptPixel uid, captured at upload time and used by
+  // deleteWorker to clean up the PerceptPixel file when the worker row is
+  // removed. NULL on rows created before V0.3 mid-flight (handled as
+  // best-effort orphans on delete).
+  perceptpixel_uid?: string | null;
 };
 
 // === NCB envelope types ===
