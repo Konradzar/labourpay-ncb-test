@@ -21,25 +21,23 @@ import { getSessionUser } from "@/lib/ncb-utils";
 import {
   uploadToPerceptPixel,
   addAnnotationsToMedia,
-  moveMediaToFolder,
   PP_MAX_BYTES,
+  WORKERS_FOLDER,
 } from "@/lib/perceptpixel-utils";
-import { relocateCdnUrl } from "@/lib/perceptpixel-url";
 
-// Workers-specific post-upload metadata: tag + destination folder. Each new
-// per-table upload route (projects, teams, etc.) gets its own constants.
-// Hard-coded here, not passed from the client, so the client can't lie about
-// which table the upload belongs to.
+// The "worker" tag applied to every PP upload from this route. Each new
+// per-table upload route (projects, teams, etc.) would get its own tag
+// constant. Hard-coded here, not passed from the client, so the client
+// can't lie about which table the upload belongs to.
 //
-// SEQUENCE MATTERS: upload to root → tag → move. We can't upload directly
-// into the folder because folder-scoped media is not addressable by
-// /v1/media/<uid>, which blocks the annotation call. See the comment in
-// lib/perceptpixel-utils.ts uploadToPerceptPixel for the gory detail.
+// V0.3 sequence: upload-directly-to-folder → tag-with-folder-context.
+// (V0.1.5 had a 3-step root → tag → move sequence; we collapsed it after
+// discovering PerceptPixel's `?folder_name=` query param works on all uid
+// endpoints. See docs/PERCEPTPIXEL_NOTES.md.)
 const WORKERS_TAG: { name: string; confidence: number } = {
   name: "worker",
   confidence: 1.0,
 };
-const WORKERS_FOLDER = "Workers";
 
 export async function POST(req: NextRequest) {
   // V0.3 — gate on session. Anonymous callers get 401 so the public URL
@@ -86,16 +84,27 @@ export async function POST(req: NextRequest) {
   const contentType = file.type || "application/octet-stream";
 
   try {
-    // Step 1 — upload to root (no folder). Folder-scoped uploads are not
-    // queryable by uid, which would break the next two steps.
-    const result = await uploadToPerceptPixel(arrayBuffer, filename, contentType);
+    // Step 1 — upload directly into the Workers folder. PerceptPixel's
+    // upload endpoint accepts a `folder` form field; the response cdn_url
+    // already points at <org>/Workers/<filename>, no relocation needed.
+    const result = await uploadToPerceptPixel(
+      arrayBuffer,
+      filename,
+      contentType,
+      WORKERS_FOLDER
+    );
 
-    // Step 2 — tag with "worker". Fire-and-forget: if tagging fails,
-    // the image is already uploaded and usable; failing the whole request
-    // would be the wrong tradeoff. The retry-on-404 inside the helper
-    // already handles indexing-race transients.
+    // Step 2 — tag with "worker". Pass WORKERS_FOLDER so the annotations
+    // endpoint can resolve the foldered uid (it 404s without the query
+    // parameter; see docs/PERCEPTPIXEL_NOTES.md). Fire-and-forget: if
+    // tagging fails, the image is already uploaded and visible in the
+    // dashboard. The helper's retry-on-404 handles PP's indexing race.
     try {
-      await addAnnotationsToMedia(result.uid, { tags: [WORKERS_TAG] });
+      await addAnnotationsToMedia(
+        result.uid,
+        { tags: [WORKERS_TAG] },
+        WORKERS_FOLDER
+      );
     } catch (tagErr) {
       console.warn(
         `[perceptpixel-upload] auto-tag failed for uid=${result.uid}:`,
@@ -103,27 +112,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Step 3 — move into the Workers folder. Same fire-and-forget posture:
-    // if move fails, the image is uploaded + tagged but sits in the root.
-    // User can manually relocate via the dashboard if it matters.
-    //
-    // Crucially: when move SUCCEEDS, the file is now at <org>/Workers/<filename>
-    // but `result.cdn_url` from step 1 still points at <org>/<filename>. We
-    // construct the post-move URL and return THAT to the browser, so the
-    // value stored in NCB matches the file's actual location.
-    let cdn_url = result.cdn_url;
-    try {
-      await moveMediaToFolder(result.uid, WORKERS_FOLDER);
-      cdn_url = relocateCdnUrl(result.cdn_url, WORKERS_FOLDER);
-    } catch (moveErr) {
-      console.warn(
-        `[perceptpixel-upload] move-to-folder failed for uid=${result.uid}:`,
-        moveErr instanceof Error ? moveErr.message : moveErr
-      );
-      // cdn_url stays as the root-level URL — file is at root, URL matches.
-    }
-
-    return NextResponse.json({ cdn_url, uid: result.uid });
+    return NextResponse.json({ cdn_url: result.cdn_url, uid: result.uid });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     // 502 = upstream (PerceptPixel) gave us something we couldn't translate.

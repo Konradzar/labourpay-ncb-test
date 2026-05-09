@@ -10,13 +10,12 @@
 ## TL;DR — the rules that aren't obvious from the docs
 
 1. **Auth is `Api-Key`, not `Bearer`.** Header literal: `Authorization: Api-Key <KEY>`.
-2. **Folders are *organizational metadata*, not paths in storage.** Files uploaded with `folder=X` go into a *folder-scoped namespace* that is **NOT addressable by `/v1/media/<uid>`** for tags, view, or annotations. Workaround: upload to root, operate on the uid, then **move** to the folder.
-3. **URL transformations only work for files inside folders** (at least in our `evzmohsl` org). Root-level files return 404 for any transform URL even though the original serves fine.
-4. **The transformation segment goes immediately after the org-uid**, not before the filename. So `<host>/<org>/<transform>/<folder>/<filename>` — *not* `<host>/<org>/<folder>/<transform>/<filename>`.
-5. **The `cdn_url` returned by upload doesn't auto-update after a move.** You have to reconstruct it server-side.
-6. **uid-based endpoints have an indexing race** — a 404 immediately after upload doesn't mean the uid is wrong, it means PerceptPixel hasn't indexed it yet. Retry with backoff.
+2. **Foldered files live in a separate uid namespace from root files.** Default uid endpoints (`/v1/media/<uid>`, `/v1/media/<uid>/annotations`, `DELETE /v1/media/<uid>`) return `404 No Media matches the given query` for files inside a folder — even though the file IS in PerceptPixel and the dashboard shows it fine. **The fix:** append `?folder_name=<folder>` to the URL on every uid endpoint. PerceptPixel re-scopes the lookup into the folder namespace and the call works as documented. This query-param form is **undocumented** in PerceptPixel's public docs but verified empirically (V0.3, May 2026, by Konrad in NativeRest). It works on **all** uid endpoints — at least DELETE and annotations have been confirmed.
+3. **You can upload directly to a folder** by passing `folder=<name>` as a form-data field on `POST /v1/media`. The response cdn_url already points at `<host>/<org>/<folder>/<filename>` — no separate move call needed. (Earlier V0.1.5 notes prescribed a 3-step "upload to root → tag → move" workaround. That approach was based on incomplete API knowledge; rule #2 makes the direct-to-folder upload safe.)
+4. **URL transformations only work for files inside folders** (at least in our `evzmohsl` org). Root-level files return 404 for any transform URL even though the original serves fine — another reason direct-to-folder upload is the right default.
+5. **The transformation segment goes immediately after the org-uid**, not before the filename. So `<host>/<org>/<transform>/<folder>/<filename>` — *not* `<host>/<org>/<folder>/<transform>/<filename>`.
+6. **uid-based endpoints have an indexing race** — a 404 immediately after upload doesn't mean the uid is wrong, it means PerceptPixel hasn't indexed it yet. Retry with backoff. (Independent of the folder-namespace 404, which is a permanent state until you add `?folder_name=`.)
 7. **The Api-Key cannot be exposed to the browser.** All uploads must go via a server-side proxy. There is no presigned-URL or browser-direct equivalent (unlike S3).
-8. **`DELETE /v1/media/<uid>` on a foldered file silently 404s.** The working form is `DELETE /v1/media/<uid>?folder_name=<folder>` → 204 No Content. The path-only form documented in PerceptPixel's public docs only works for root-level files. Discovered V0.3 mid-flight (May 2026) — see "Delete" section below.
 
 ---
 
@@ -74,16 +73,16 @@ PerceptPixel Dashboard → Settings → API Keys → "Create Token". Single-name
   - `file` — binary
   - `name` — filename string
 - Optional fields:
-  - `folder` — **DO NOT USE.** See "Folder gotcha" below.
+  - `folder` — destination folder name. **Use it.** PerceptPixel auto-creates the folder if it doesn't exist, and the response cdn_url already points at the foldered path. (V0.1.5 had a note saying "DO NOT USE" because the team only knew about the path-only uid endpoints; that workaround was superseded once we discovered `?folder_name=` works on all uid endpoints. See TL;DR rule #2.)
 
 ### Response (200 OK)
 ```json
 {
   "uid": "aRjexrkh",                         // 8-10 char alphanumeric, our handle
   "name": "cat.jpg",
-  "path": "<project>-<org>/cat.jpg",         // internal storage path (NOT a URL)
-  "cdn_url": "https://img.perceptpixel.com/<org>/cat.jpg",  // public URL
-  "thumbnail_url": "https://img.perceptpixel.com/<org>/w_600,h_600,c_pad/cat.jpg",
+  "path": "<project>-<org>/Workers/cat.jpg", // internal storage path (NOT a URL)
+  "cdn_url": "https://img.perceptpixel.com/<org>/Workers/cat.jpg",  // public URL — already foldered when folder=Workers was passed
+  "thumbnail_url": "https://img.perceptpixel.com/<org>/w_600,h_600,c_pad/Workers/cat.jpg",
   "file_size": 144224,
   "width": 600,
   "height": 800,
@@ -91,7 +90,7 @@ PerceptPixel Dashboard → Settings → API Keys → "Create Token". Single-name
   "uploaded_by": "user@example.com",
   "tags": [],
   "caption": null,
-  "folder": null,
+  "folder": "Workers",
   "saved_images": { ... }                    // pre-computed variant URLs
 }
 ```
@@ -99,12 +98,13 @@ PerceptPixel Dashboard → Settings → API Keys → "Create Token". Single-name
 ### Browser-direct upload?
 No — there is **no presigned-URL flow** like S3 has. Browser → Next.js route handler → PerceptPixel is the only safe path because the Api-Key must stay server-side.
 
-### Implementation pattern
+### Implementation pattern (V0.3+ direct-to-folder)
 ```typescript
 // Server-side helper (Node 18+)
 const form = new FormData();
 form.append("file", new Blob([arrayBuffer], { type: contentType }), filename);
 form.append("name", filename);
+form.append("folder", "Workers"); // V0.3+ — file lands in folder, cdn_url is already foldered
 
 const res = await fetch("https://api.perceptpixel.com/v1/media", {
   method: "POST",
@@ -114,54 +114,48 @@ const res = await fetch("https://api.perceptpixel.com/v1/media", {
 });
 ```
 
+After upload, any subsequent uid-based call (annotations, delete) must include `?folder_name=Workers` as a query parameter — see the relevant sections below.
+
 TS note: pass `ArrayBuffer` to `new Blob([...])`, not `Buffer` or `Uint8Array<ArrayBufferLike>`. Strict `BlobPart` typing in TS 5.x rejects the latter due to the `SharedArrayBuffer` corner case.
 
 ---
 
-## Folder gotcha — the biggest landmine
+## Folder gotcha — the original landmine, and the V0.3 fix
 
-### What appears to work
-The `folder` parameter on `POST /v1/media` is documented and accepted:
-```
-form.append("folder", "Workers");
-```
-HTTP 201, you get back a uid + cdn_url like `https://img.perceptpixel.com/<org>/Workers/<filename>`. The file appears in the dashboard inside the "Workers" folder. Looks great.
+### The shape of the problem
 
-### Where it breaks (silent, downstream)
-Files uploaded this way are in a **folder-scoped namespace** that is not addressable via the standard uid endpoints:
+Files inside a folder live in a **separate uid namespace** from root files. The default uid endpoints can't see them:
+
 - `GET /v1/media/<uid>` → 404 `{"detail": "No Media matches the given query."}`
 - `POST /v1/media/<uid>/annotations` → 404
-- The file IS visible in the dashboard. The uid IS the one returned by upload. Both views and tags fail.
+- `DELETE /v1/media/<uid>` → 404
 
-So you upload, get a uid, the file looks fine, then any subsequent API call fails as if the file doesn't exist. *Insidious because it appears to work on the way in.*
+This is true whether the file got into the folder via direct upload (`folder=` form field on `POST /v1/media`) or via a later move (`PUT /v1/media/<uid>/move`). The file IS visible in the dashboard. The uid IS the one returned by upload. The default endpoints just don't find it.
 
-### List endpoint also can't see folder contents
+### The V0.3 fix: `?folder_name=<folder>` query parameter
+
+Append `?folder_name=<folder>` to the URL on every uid endpoint and PerceptPixel re-scopes the lookup into the folder namespace. **All the previously-404 endpoints now work as documented.** Tested against our `evzmohsl` org, May 2026:
+
+| Endpoint shape | Foldered uid result |
+|---|---|
+| `DELETE /v1/media/<uid>` | 404 (silent fail) |
+| `DELETE /v1/media/<uid>?folder_name=Workers` | **204 No Content** ✅ |
+| `POST /v1/media/<uid>/annotations` | 404 |
+| `POST /v1/media/<uid>/annotations?folder_name=Workers` | **200** ✅ |
+| `GET /v1/media/<uid>` | 404 |
+| `GET /v1/media/<uid>?folder_name=Workers` | (untested as of V0.3, but plausibly 200 by symmetry) |
+
+The query-param form is **undocumented** in PerceptPixel's public API docs. Konrad discovered it by experimenting in NativeRest while debugging the V0.3 deleteWorker flow. PerceptPixel's docs almost certainly miss it because the docs were written before folders existed; the param is a backward-compatible extension hidden behind their API but not surfaced anywhere.
+
+### List endpoint does NOT respect `?folder=`
+
 - `GET /v1/media?folder=Workers` returns the same root-level items as `GET /v1/media` — the filter is silently ignored. We tested this with multiple folder names; always returned root items only.
-- Empirically: in our account, folders are a *dashboard organization* concept, not a queryable scope.
+- The query-param `?folder_name=` was not tested on the list endpoint. May or may not work — V1.0+ work, not relevant for V0.3.
+- For listing folder contents reliably: use the dashboard. Or upload tagged files and filter the root list by tag instead of folder.
 
-### The fix that does work (verified empirically)
-Upload to root, perform any uid-based operations, *then* move:
-```
-1. POST /v1/media                       → uid in root
-2. POST /v1/media/<uid>/annotations     → tags applied (file is queryable)
-3. PUT  /v1/media/<uid>/move            → file lands in target folder
-```
-This sequence is reliable. The user verified manually that **tags survive folder moves** — so step 2 doesn't get undone by step 3.
+### History: the V0.1.5 workaround (now superseded)
 
-### Reconstruct the post-move cdn_url server-side
-When you move from root to a folder, the `cdn_url` from step 1 is now stale (points at the file's old root location). Move endpoint doesn't return the new URL. Reconstruct it:
-```typescript
-// in:  https://img.perceptpixel.com/<org>/<filename>
-// out: https://img.perceptpixel.com/<org>/<folder>/<filename>
-function relocateCdnUrl(cdnUrl, folderName) {
-  const url = new URL(cdnUrl);
-  const segments = url.pathname.split("/").filter(s => s);
-  if (segments.length !== 2) return cdnUrl;
-  const [orgUid, filename] = segments;
-  return `${url.origin}/${orgUid}/${encodeURIComponent(folderName)}/${filename}`;
-}
-```
-Persist *that* URL, not the upload's original cdn_url. (We didn't do this initially and ended up with stale URLs in NCB pointing at non-existent root paths.)
+V0.1.5 didn't know about `?folder_name=`, so it used a 3-step workaround: upload to root → tag while in root namespace → move to folder. The cdn_url returned by step 1 had to be reconstructed (`relocateCdnUrl` helper in `lib/perceptpixel-url.ts`) because it pointed at the pre-move root path. V0.3 replaced this with a 2-step direct-to-folder flow; the old `relocateCdnUrl` and `moveMediaToFolder` helpers were deleted. See "The recipe that works" below for the current sequence.
 
 ---
 
@@ -181,10 +175,18 @@ PerceptPixel calls tags+captions together "annotations". Tags are **objects**, n
 ```
 - `confidence`: 1.0 for human-set; <1.0 for AI-generated suggestions.
 
-### Update — `POST /v1/media/<uid>/annotations`
+### Update — `POST /v1/media/<uid>/annotations[?folder_name=<folder>]`
 - Body: JSON
 - Partial update: omit a field to retain existing, pass `[]` to clear.
 - 200 returns the updated annotations object.
+- **Foldered uids:** append `?folder_name=<folder>`. Without it the endpoint returns 404 with `"No Media matches the given query."` even though the uid is correct. See "Folder gotcha" above. Example:
+  ```bash
+  POST https://api.perceptpixel.com/v1/media/MCkCKCLKrI/annotations?folder_name=Workers
+  Authorization: Api-Key <KEY>
+  Content-Type: application/json
+  Body: {"tags":[{"name":"worker","confidence":1.0}]}
+  → 200 OK
+  ```
 
 ### AI auto-tag — `POST /v1/media/<uid>/annotations/generate`
 - No body required.
@@ -214,6 +216,8 @@ for (let attempt = 1; attempt <= 3; attempt++) {
 
 ## Move (`PUT /v1/media/<uid>/move`)
 
+> **Not used by the V0.3 flow.** The V0.1.5 upload pipeline relied on this to relocate root uploads into the Workers folder; V0.3 dropped that step in favor of direct-to-folder upload + `?folder_name=` on subsequent calls. Documented here for completeness — useful if you ever need to relocate an existing file (e.g. a "Workers/_archive" folder for soft-deleted records).
+
 ### Surprise: form-urlencoded body, not JSON
 Per the curl example in their docs:
 ```bash
@@ -232,6 +236,16 @@ fetch(`https://api.perceptpixel.com/v1/media/${uid}/move`, {
 });
 ```
 Don't manually set Content-Type — `URLSearchParams` as body does it for you.
+
+### Empty folder_name is rejected (no "move to root" via this endpoint)
+Tested in V0.3:
+| folder_name value | Result |
+|---|---|
+| `""` | 400 "Please specify destination folder name" |
+| `"/"` | 400 |
+| `"_root"` | 400 (no implicit root concept) |
+
+There is no API path to move a foldered file back to root. If you need to operate on a foldered uid, use `?folder_name=` on the relevant endpoint instead of trying to move it out.
 
 ### Auto-creates folders
 Pass any folder name; PerceptPixel creates it on first reference. No separate "create folder" call needed.
@@ -295,13 +309,13 @@ if (!res.ok && res.status !== 404) {
 | Attempt | Result |
 |---|---|
 | `DELETE /v1/media/<uid>` (no folder_name) | 404; file stays in folder |
-| `GET /v1/media/<uid>` (no folder_name) on foldered file | 404 (you can't even read its metadata) |
+| `GET /v1/media/<uid>` (no folder_name) on foldered file | 404 (can't even read its metadata) |
+| `POST /v1/media/<uid>/annotations` (no folder_name) on foldered file | 404 |
 | `PUT /v1/media/<uid>/move` with `folder_name=""` | 400 "Please specify destination folder name" |
 | `PUT /v1/media/<uid>/move` with `folder_name="/"` | 400 |
 | `PUT /v1/media/<uid>/move` with `folder_name="_root"` | 400 (no implicit root concept) |
-| `POST /v1/media/<uid>/annotations` on foldered file (no folder_name) | 404 |
 
-The annotations endpoint with `?folder_name=` was not exhaustively tested but is plausibly the same shape — if you need to update tags on a foldered file, try the query-param form first.
+The first three rows all share the same root cause: the standard uid endpoints don't see the folder namespace without `?folder_name=<folder>`. Konrad's NativeRest testing confirmed annotations specifically: `POST /v1/media/<uid>/annotations?folder_name=Workers` returns 200 where the path-only form returned 404.
 
 ### CDN cache zombie note
 
@@ -366,37 +380,63 @@ The CDN serves transformations on demand — you don't need to "register" a thum
 
 ---
 
-## The recipe that works (V0.1.5 reference)
+## The recipe that works (V0.3 — current)
 
 For "upload an image, tag it, put it in a folder, store the public URL":
 
 ```typescript
 // SERVER-SIDE — never run this in the browser
 async function uploadAndOrganize(arrayBuffer, filename, contentType, folderName, tags) {
-  // Step 1: upload to root (no folder param)
-  const upload = await uploadToPerceptPixel(arrayBuffer, filename, contentType);
-  // upload = { uid, cdn_url: "<host>/<org>/<filename>" }
+  // Step 1: upload directly to the destination folder. The cdn_url returned
+  // already includes the folder path. No relocation needed.
+  const upload = await uploadToPerceptPixel(
+    arrayBuffer, filename, contentType, folderName
+  );
+  // upload = { uid, cdn_url: "<host>/<org>/<folderName>/<filename>" }
 
-  // Step 2: tag (retry-on-404 inside the helper)
+  // Step 2: tag with folder context. Foldered uids return 404 on annotations
+  // unless ?folder_name=<folder> scopes the lookup. Fire-and-forget on
+  // failure (file is already uploaded and visible in the dashboard).
   try {
-    await addAnnotationsToMedia(upload.uid, { tags });
-  } catch (e) { console.warn("tagging failed", e); /* fire-and-forget */ }
+    await addAnnotationsToMedia(upload.uid, { tags }, folderName);
+  } catch (e) { console.warn("tagging failed", e); }
 
-  // Step 3: move to folder (retry-on-404 inside the helper)
-  let cdn_url = upload.cdn_url;
-  try {
-    await moveMediaToFolder(upload.uid, folderName);
-    cdn_url = relocateCdnUrl(upload.cdn_url, folderName);  // <-- KEY
-  } catch (e) { console.warn("move failed", e); /* file stays in root */ }
+  return { cdn_url: upload.cdn_url, uid: upload.uid };
+}
 
-  return { cdn_url, uid: upload.uid };
+// And later, on cleanup:
+async function deleteMedia(uid, folderName) {
+  // Foldered uids ALSO need ?folder_name=<folder> on DELETE.
+  await fetch(
+    `https://api.perceptpixel.com/v1/media/${uid}?folder_name=${folderName}`,
+    { method: "DELETE", headers: { Authorization: `Api-Key ${API_KEY}` } }
+  );
+  // 200, 204, 404 → success (404 = already gone or wrong folder; treat both as ok)
 }
 ```
 
 Key pattern points:
-- Each downstream step is **fire-and-forget** — failure shouldn't block the upload, and the response should be the uploaded URL regardless. Tag/move are enhancements, not critical-path.
-- Retry-on-404 lives inside the helpers, so callers don't worry about indexing race.
-- The cdn_url returned reflects the file's **actual final location** after all steps.
+- Step 2 is **fire-and-forget** — tagging failure shouldn't block the upload. The file is already in the folder and the cdn_url is already valid.
+- Retry-on-404 lives inside the helpers, so callers don't worry about indexing race. (Note: indexing-race 404s and folder-namespace 404s look identical from the response. The retry mostly catches the indexing race; the `?folder_name=` query param fixes the namespace one.)
+- Always pass `folderName` to subsequent uid-based operations on the same file. There's no API to move it back to root, so once it's foldered, downstream calls must include the folder.
+
+### V0.1.5 reference (the older, more complicated recipe)
+
+For historical context — V0.1.5 didn't know about the `?folder_name=` query parameter, so it used a 3-step root → tag → move sequence with cdn_url reconstruction. That code is gone (deleted in V0.3); this snippet is preserved only so anyone reading old commits can follow what was happening:
+
+```typescript
+// V0.1.5 — DO NOT USE. Kept here for historical reference only.
+async function uploadAndOrganize_v015(arrayBuffer, filename, contentType, folderName, tags) {
+  const upload = await uploadToPerceptPixel(arrayBuffer, filename, contentType); // root
+  try { await addAnnotationsToMedia(upload.uid, { tags }); } catch {}            // tag in root
+  let cdn_url = upload.cdn_url;
+  try {
+    await moveMediaToFolder(upload.uid, folderName);                              // relocate
+    cdn_url = relocateCdnUrl(upload.cdn_url, folderName);                         // reconstruct URL
+  } catch {}
+  return { cdn_url, uid: upload.uid };
+}
+```
 
 ---
 
@@ -447,4 +487,4 @@ When something's not working, run these in order:
 
 ---
 
-*Last updated: V0.3 mid-flight, May 2026 — added the Delete section after discovering the `?folder_name=` quirk. Cross-reference: `lib/perceptpixel-utils.ts` (server helpers including `deletePerceptPixelMedia`), `lib/perceptpixel-url.ts` (pure URL helpers), `app/api/perceptpixel-upload/route.ts` (route orchestration), `app/(app)/workers/[id]/actions.ts` (`deleteWorker` calls into the delete helper), `docs/NCB_NOTES.md` (the partner doc for NoCodeBackend).*
+*Last updated: V0.3 finishing pass, May 2026 — generalised the `?folder_name=` discovery (originally only documented for DELETE) to the cross-cutting "all uid endpoints take folder_name" rule that Konrad established via NativeRest testing. Replaced V0.1.5's 3-step root → tag → move recipe with the V0.3 2-step direct-to-folder + folder-scoped tag flow. Deleted dead helpers `relocateCdnUrl` and `moveMediaToFolder` from the codebase. Cross-reference: `lib/perceptpixel-utils.ts` (server helpers — `uploadToPerceptPixel`, `addAnnotationsToMedia`, `deletePerceptPixelMedia`, plus the `WORKERS_FOLDER` constant), `lib/perceptpixel-url.ts` (pure URL helper `perceptpixelThumbnailUrl`), `app/api/perceptpixel-upload/route.ts` (the V0.3 2-step orchestration), `app/(app)/workers/[id]/actions.ts` (`deleteWorker` calls the delete helper), `docs/NCB_NOTES.md` (the partner doc for NoCodeBackend).*

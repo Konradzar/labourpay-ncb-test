@@ -37,6 +37,13 @@ if (!API_KEY) {
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "application/pdf"] as const;
 export const PP_MAX_BYTES = 5 * 1024 * 1024; // mirror existing S3 limit (lib/s3-utils.ts)
 
+// V0.3 — the single PerceptPixel folder this app uses for worker images.
+// Exported so the upload route, the delete helper, and any future caller
+// agree on the same string. If you ever add a second folder (e.g. a
+// "Projects" folder), parameterise the call sites instead of duplicating
+// this constant.
+export const WORKERS_FOLDER = "Workers";
+
 export type PerceptPixelUploadResult = {
   cdn_url: string;
   uid: string;
@@ -47,7 +54,8 @@ export type PerceptPixelUploadResult = {
 export async function uploadToPerceptPixel(
   fileData: ArrayBuffer,
   filename: string,
-  contentType: string
+  contentType: string,
+  folderName?: string
 ): Promise<PerceptPixelUploadResult> {
   if (!(ALLOWED_TYPES as readonly string[]).includes(contentType)) {
     throw new Error(`Unsupported type: ${contentType}. Use JPEG, PNG, or PDF.`);
@@ -56,12 +64,13 @@ export async function uploadToPerceptPixel(
     throw new Error(`File too large (max ${PP_MAX_BYTES / 1024 / 1024} MB).`);
   }
 
-  // IMPORTANT: do NOT pass a `folder` field here. We tested it; PerceptPixel
-  // accepts the parameter happily but routes the resulting media into a
-  // folder-scoped namespace that is NOT addressable by /v1/media/<uid>.
-  // Both GET (view) and POST (annotations) return 404 for those uids.
-  // Solution: upload to root (file becomes queryable), tag, THEN call
-  // moveMediaToFolder() to relocate. See route.ts for the orchestration.
+  // V0.3 update — passing `folder` IS safe, despite what V0.1.5 tried to do.
+  // The V0.1.5 notes said "uid 404s after folder upload" because we tried
+  // standard `/v1/media/<uid>` calls. Konrad's NativeRest testing established
+  // that all uid endpoints accept `?folder_name=<folder>` to re-scope into
+  // the folder namespace. So uploading directly to the destination folder is
+  // fine, as long as subsequent annotation/delete calls pass `?folder_name=`.
+  // See docs/PERCEPTPIXEL_NOTES.md for the full story.
   //
   // Node 18+ FormData accepts Blob. Pass the ArrayBuffer directly — it's
   // unambiguously a BlobPart in TS's BlobPart union (ArrayBuffer is one of
@@ -71,6 +80,9 @@ export async function uploadToPerceptPixel(
   const form = new FormData();
   form.append("file", new Blob([fileData], { type: contentType }), filename);
   form.append("name", filename);
+  if (folderName) {
+    form.append("folder", folderName);
+  }
 
   const res = await fetch(UPLOAD_URL, {
     method: "POST",
@@ -109,16 +121,25 @@ export async function uploadToPerceptPixel(
 // Tags are NOT plain strings; they're `{name: string, confidence: number}`
 // objects. Confidence is 1.0 for human-set tags, < 1.0 for AI-suggested ones.
 //
-// API: POST https://api.perceptpixel.com/v1/media/<uid>/annotations
+// API: POST https://api.perceptpixel.com/v1/media/<uid>/annotations[?folder_name=<folder>]
 //   Body (all fields optional — partial update):
 //     { tags?: [{name, confidence}, ...], captions?: [{text, confidence}, ...] }
 //   Omitted fields → existing values retained.
 //   Empty array → field cleared.
 //
+// Folder rule (V0.3, undocumented in PP's public docs but verified): if the
+// uid lives inside a folder, you MUST append `?folder_name=<folder>` to the
+// URL or the call returns 404. Pass `folderName` here for foldered uids;
+// omit it for root-level files.
+//
 // Source: https://perceptpixel.com/docs/api/media/update-annotations
 
-const ANNOTATIONS_URL = (uid: string) =>
-  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}/annotations`;
+const ANNOTATIONS_URL = (uid: string, folderName?: string) => {
+  const base = `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}/annotations`;
+  return folderName
+    ? `${base}?folder_name=${encodeURIComponent(folderName)}`
+    : base;
+};
 
 export type PerceptPixelTag = { name: string; confidence: number };
 export type PerceptPixelCaption = { text: string; confidence: number };
@@ -129,7 +150,8 @@ export type PerceptPixelAnnotations = {
 
 export async function addAnnotationsToMedia(
   uid: string,
-  annotations: PerceptPixelAnnotations
+  annotations: PerceptPixelAnnotations,
+  folderName?: string
 ): Promise<void> {
   // Retry on 404. PerceptPixel returns "No Media matches the given query"
   // immediately after an upload while the media is still being indexed by
@@ -146,7 +168,7 @@ export async function addAnnotationsToMedia(
       await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]));
     }
 
-    const res = await fetch(ANNOTATIONS_URL(uid), {
+    const res = await fetch(ANNOTATIONS_URL(uid, folderName), {
       method: "POST",
       headers: {
         Authorization: `Api-Key ${API_KEY}`,
@@ -169,61 +191,6 @@ export async function addAnnotationsToMedia(
   throw lastError ?? new Error("PerceptPixel annotations update failed: unknown");
 }
 
-// === Move (relocate to a folder) ===
-//
-// API: PUT https://api.perceptpixel.com/v1/media/<uid>/move
-//   Body: form-urlencoded `folder_name=<name>` (NOT JSON — see curl in docs)
-//   Auto-creates the folder if it doesn't exist.
-//   200 → {"status": "success"}
-//
-// Used after upload + tagging to relocate the file into its destination
-// folder. Done in this order because folder-scoped media isn't addressable
-// by /v1/media/<uid> for tagging — see the comment in uploadToPerceptPixel.
-//
-// Source: https://perceptpixel.com/docs/api/media/move-files
-
-const MOVE_URL = (uid: string) =>
-  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}/move`;
-
-export async function moveMediaToFolder(
-  uid: string,
-  folderName: string
-): Promise<void> {
-  // Same retry-on-404 indexing-race pattern as addAnnotationsToMedia. The
-  // move endpoint also looks up media by uid, so it can race the same way.
-  const MAX_ATTEMPTS = 3;
-  const BACKOFF_MS = [0, 500, 1000];
-
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (BACKOFF_MS[attempt - 1] > 0) {
-      await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt - 1]));
-    }
-
-    const res = await fetch(MOVE_URL(uid), {
-      method: "PUT",
-      headers: {
-        Authorization: `Api-Key ${API_KEY}`,
-        // Don't set Content-Type explicitly — URLSearchParams as body
-        // auto-sets application/x-www-form-urlencoded which is what
-        // PerceptPixel expects (per the curl example in their docs).
-      },
-      body: new URLSearchParams({ folder_name: folderName }),
-    });
-
-    if (res.ok) return;
-
-    const status = res.status;
-    const body = await res.text();
-    lastError = new Error(
-      `PerceptPixel move failed (attempt ${attempt}/${MAX_ATTEMPTS}): ${status} ${body}`
-    );
-    if (status !== 404) break;
-  }
-
-  throw lastError ?? new Error("PerceptPixel move failed: unknown");
-}
-
 // === Delete ===
 //
 // API: DELETE https://api.perceptpixel.com/v1/media/<uid>?folder_name=<folder>
@@ -239,19 +206,17 @@ export async function moveMediaToFolder(
 // name as a QUERY PARAMETER scopes the lookup correctly. PerceptPixel
 // returns 204 No Content on success.
 //
-// The folder name is hardcoded to "Workers" because that's the only
-// folder this app uploads to. If we ever add a second folder, lift this
-// to a parameter (or read it from the cdn_url path).
+// Folder is hardcoded to WORKERS_FOLDER because that's the only folder
+// this app uploads to. If we ever add a second folder, parameterise
+// this helper (or read the folder from the cdn_url path).
 //
 // Status semantics:
 //   200, 204 → success (DELETE actually removed the file)
 //   404      → success (file already gone, e.g. concurrent delete)
 //   anything else → throw so the caller can log + continue
 
-const WORKERS_FOLDER_FOR_DELETE = "Workers";
-
 const DELETE_URL = (uid: string) =>
-  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}?folder_name=${encodeURIComponent(WORKERS_FOLDER_FOR_DELETE)}`;
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}?folder_name=${encodeURIComponent(WORKERS_FOLDER)}`;
 
 export async function deletePerceptPixelMedia(uid: string): Promise<void> {
   const apiKey = process.env.PERCEPTPIXEL_API_KEY;
