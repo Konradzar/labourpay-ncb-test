@@ -226,30 +226,32 @@ export async function moveMediaToFolder(
 
 // === Delete ===
 //
-// API: DELETE https://api.perceptpixel.com/v1/media/<uid>
+// API: DELETE https://api.perceptpixel.com/v1/media/<uid>?folder_name=<folder>
 //
 // Used by deleteWorker (V0.3 mid-flight) to clean up the PerceptPixel file
 // when its owning worker row is removed from NCB. Best-effort: callers
 // catch and log on failure rather than blocking the local delete.
 //
-// FOLDER GOTCHA (discovered V0.3 mid-flight, mirror of the upload-side
-// folder gotcha documented in PERCEPTPIXEL_NOTES.md): PerceptPixel's
-// DELETE endpoint returns 200 on foldered files but only removes the
-// metadata link — the underlying file stays in the dashboard's folder
-// view. The fix is symmetric with the upload sequence: move-to-root
-// FIRST so the file is back in the standard uid namespace, THEN DELETE.
+// FOLDER GOTCHA (V0.3 mid-flight, undocumented in PerceptPixel's public
+// docs): foldered files live in a separate uid namespace. Without
+// `?folder_name=<folder>` the DELETE returns 404 (and our catch silently
+// treats 404 as "already gone" → file lingers in PP). Passing the folder
+// name as a QUERY PARAMETER scopes the lookup correctly. PerceptPixel
+// returns 204 No Content on success.
 //
-// Why move-to-root before delete:
-//   upload  : root → tag → move-to-folder      (uid addressable in root for tag)
-//   delete  : move-to-root → DELETE            (uid addressable in root for delete)
+// The folder name is hardcoded to "Workers" because that's the only
+// folder this app uploads to. If we ever add a second folder, lift this
+// to a parameter (or read it from the cdn_url path).
 //
-// The move call is best-effort. If it fails (network blip, rate limit),
-// we still attempt DELETE — worst case the file stays as an orphan and
-// the logs surface the cause. 200 and 404 on DELETE are both success;
-// anything else throws so the caller can decide.
+// Status semantics:
+//   200, 204 → success (DELETE actually removed the file)
+//   404      → success (file already gone, e.g. concurrent delete)
+//   anything else → throw so the caller can log + continue
+
+const WORKERS_FOLDER_FOR_DELETE = "Workers";
 
 const DELETE_URL = (uid: string) =>
-  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}`;
+  `https://api.perceptpixel.com/v1/media/${encodeURIComponent(uid)}?folder_name=${encodeURIComponent(WORKERS_FOLDER_FOR_DELETE)}`;
 
 export async function deletePerceptPixelMedia(uid: string): Promise<void> {
   const apiKey = process.env.PERCEPTPIXEL_API_KEY;
@@ -257,29 +259,6 @@ export async function deletePerceptPixelMedia(uid: string): Promise<void> {
     throw new Error("PERCEPTPIXEL_API_KEY missing");
   }
 
-  // Step 1: move-to-root (best-effort). folder_name="" is the empirically
-  // observed convention; if PerceptPixel rejects it the DELETE attempt below
-  // still runs.
-  try {
-    const moveRes = await fetch(MOVE_URL(uid), {
-      method: "PUT",
-      headers: { Authorization: `Api-Key ${apiKey}` },
-      body: new URLSearchParams({ folder_name: "" }),
-    });
-    if (!moveRes.ok) {
-      const body = await moveRes.text();
-      console.warn(
-        `[deletePerceptPixelMedia ${uid}] move-to-root non-ok ${moveRes.status}: ${body.slice(0, 200)} (continuing to DELETE anyway)`
-      );
-    }
-  } catch (err) {
-    console.warn(
-      `[deletePerceptPixelMedia ${uid}] move-to-root threw (continuing to DELETE anyway):`,
-      err
-    );
-  }
-
-  // Step 2: DELETE.
   const res = await fetch(DELETE_URL(uid), {
     method: "DELETE",
     headers: { Authorization: `Api-Key ${apiKey}` },
